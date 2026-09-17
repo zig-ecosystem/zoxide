@@ -49,11 +49,52 @@ correctly reports compile-unavailable but assemble/run-ready, exit 0.
 ## Cross-compiling for a Linux GPU pod
 
 ```sh
-zig build -Dtarget=x86_64-linux-musl  --prefix zig-out/x86_64-linux-musl
+zig build -Dtarget=x86_64-linux-musl  --prefix zig-out/x86_64-linux-musl   # static, for ptx/cubin/doctor
 zig build -Dtarget=aarch64-linux-musl --prefix zig-out/aarch64-linux-musl
+zig build -Dtarget=x86_64-linux-gnu.2.28 -Doptimize=ReleaseSmall --prefix zig-out/x86_64-linux-gnu  # dynamic, for `run`
 ```
 
-Both produce statically linked ELF executables (verified with `file`).
+The musl builds are statically linked ELF executables (verified with
+`file`). **For `zoxide run` prefer the gnu dynamic build**: the runner
+dlopens libcuda, and a statically linked musl binary falls back to zig's
+own ElfDynLib loader, which may not handle libcuda's dependency chain. The
+gnu build links against glibc ≤ 2.28 symbols, so it runs on any pod image
+with glibc ≥ 2.28 (Ubuntu 20.04+).
+
+## Running kernels on the GPU (`zoxide run`)
+
+`src/cuda_driver.zig` binds the CUDA driver API by dlopening
+`libcuda.so.1` → `libcuda.so` (no cuda.h, no @cImport). On the pod:
+
+```sh
+# build PTX on the dev machine, copy to pod, then:
+./zoxide run vector_add.ptx                    # assembles via ptxas, runs, verifies
+./zoxide run vector_add.cubin                  # skip ptxas, load cubin directly
+./zoxide run warp_reduce.ptx --grid 64
+./zoxide run vector_add.ptx --kernel vector_add_$_vectorAdd   # override mangled name
+```
+
+Known examples are matched by file basename (`vector_add`, `shared_reverse`,
+`warp_reduce`, `atomic_counter`); each has a hardcoded host harness that
+fills inputs, launches, copies back and verifies against a CPU reference.
+Expected output on success, e.g.:
+
+```
+device: NVIDIA H20
+kernel: vector_add_$_vectorAdd
+vector_add: n=1048576 grid=4096 block=256
+PASS: vector_add n=1048576, max err 0
+```
+
+Any FAIL exits 1. Without libcuda/GPU the command prints a clear error and
+exits 1 (no crash).
+
+Driver bindings cover: cuInit, cuDeviceGetCount, cuDeviceGet,
+cuDeviceGetName, cuCtxCreate_v2, cuCtxSetCurrent, cuModuleLoadData,
+cuModuleGetFunction, cuMemAlloc_v2, cuMemFree_v2, cuMemcpyHtoD_v2,
+cuMemcpyDtoH_v2, cuLaunchKernel, cuCtxSynchronize, cuGetErrorString,
+cuGetErrorName. ABI notes: CUdeviceptr is u64; `_v2` are the real symbol
+names; kernelParams is an array of pointers to argument values.
 
 ## Device-side library (`src/cuda.zig`)
 

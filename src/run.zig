@@ -1,0 +1,305 @@
+//! `zoxide run` — end-to-end harness: load a cubin (or PTX, assembled via
+//! ptxas), launch one of the known example kernels, verify results on the host.
+
+const std = @import("std");
+const cu = @import("cuda_driver.zig");
+
+pub const RunArgs = struct {
+    input: []const u8,
+    kernel_name: ?[]const u8 = null,
+    n: usize = 1 << 20, // elements for vector_add; derived for others
+    grid: ?u32 = null,
+    block: ?u32 = null,
+    arch: []const u8 = "sm_90",
+};
+
+const Example = struct {
+    stem: []const u8,
+    entry: []const u8,
+    default_block: u32,
+};
+
+const examples = [_]Example{
+    .{ .stem = "vector_add", .entry = "vectorAdd", .default_block = 256 },
+    .{ .stem = "shared_reverse", .entry = "sharedReverse", .default_block = 256 },
+    .{ .stem = "warp_reduce", .entry = "warpReduce", .default_block = 256 },
+    .{ .stem = "atomic_counter", .entry = "atomicCounter", .default_block = 256 },
+};
+
+fn findExample(path: []const u8) ?Example {
+    const base = std.fs.path.basename(path);
+    const stem = std.fs.path.stem(base);
+    for (examples) |e| {
+        if (std.mem.eql(u8, stem, e.stem)) return e;
+    }
+    return null;
+}
+
+pub fn run(
+    gpa: std.mem.Allocator,
+    io: std.Io,
+    env: *std.process.Environ.Map,
+    args: RunArgs,
+    // Injected to reuse the CLI's ptxas logic without a circular import.
+    assemblePtx: *const fn (gpa: std.mem.Allocator, io: std.Io, env: *std.process.Environ.Map, in_ptx: []const u8, out_cubin: []const u8, arch: []const u8) anyerror!void,
+    out: *std.Io.Writer,
+) !u8 {
+    const ex = findExample(args.input) orelse {
+        try out.print("error: '{s}' does not look like a known example (vector_add/shared_reverse/warp_reduce/atomic_counter)\n", .{args.input});
+        return 1;
+    };
+
+    // Resolve input to cubin bytes.
+    var tmp_cubin: ?[]u8 = null;
+    defer if (tmp_cubin) |p| {
+        std.Io.Dir.deleteFileAbsolute(io, p) catch {};
+        gpa.free(p);
+    };
+    var cubin_path: []const u8 = args.input;
+    if (std.mem.endsWith(u8, args.input, ".ptx")) {
+        const p = try std.fmt.allocPrint(gpa, "/tmp/zoxide-run-{d}.cubin", .{std.c.getpid()});
+        tmp_cubin = p;
+        try out.print("assembling {s} -> {s} (ptxas, {s})\n", .{ args.input, p, args.arch });
+        assemblePtx(gpa, io, env, args.input, p, args.arch) catch {
+            try out.print("error: failed to assemble PTX (is ptxas available? see 'zoxide doctor')\n", .{});
+            return 1;
+        };
+        cubin_path = p;
+    } else if (!std.mem.endsWith(u8, args.input, ".cubin")) {
+        try out.print("error: input must be a .ptx or .cubin file\n", .{});
+        return 1;
+    }
+
+    const cubin = std.Io.Dir.cwd().readFileAlloc(io, cubin_path, gpa, .unlimited) catch |e| {
+        try out.print("error: cannot read '{s}': {s}\n", .{ cubin_path, @errorName(e) });
+        return 1;
+    };
+    defer gpa.free(cubin);
+
+    const kernel_name = args.kernel_name orelse
+        try std.fmt.allocPrint(gpa, "{s}_$_{s}", .{ ex.stem, ex.entry });
+    defer if (args.kernel_name == null) gpa.free(kernel_name);
+    try out.print("kernel: {s}\n", .{kernel_name});
+
+    var drv = cu.Driver.load() catch |e| {
+        switch (e) {
+            error.LibraryNotFound => try out.print(
+                \\error: libcuda not found (tried libcuda.so.1, libcuda.so, libcuda.dylib).
+                \\  This command needs an NVIDIA driver. Note: a statically linked musl
+                \\  build cannot dlopen libcuda reliably — use the gnu dynamic build on the pod.
+                \\
+            , .{}),
+            error.SymbolMissing => try out.print("error: libcuda found but a required symbol is missing\n", .{}),
+            else => try out.print("error: failed to load libcuda: {s}\n", .{@errorName(e)}),
+        }
+        return 1;
+    };
+    defer drv.unload();
+
+    var ctx = cu.Context.init(&drv) catch {
+        try out.print("error: CUDA init failed: {s}\n", .{drv.lastError()});
+        return 1;
+    };
+    var name_buf: [128]u8 = undefined;
+    try out.print("device: {s}\n", .{ctx.name(&name_buf)});
+
+    const mod = ctx.module(cubin) catch {
+        try out.print("error: cuModuleLoadData failed: {s}\n", .{drv.lastError()});
+        return 1;
+    };
+    const namez = try gpa.dupeZ(u8, kernel_name);
+    defer gpa.free(namez);
+    const func = mod.function(namez) catch {
+        try out.print("error: kernel '{s}' not found in module: {s}\n", .{ kernel_name, drv.lastError() });
+        return 1;
+    };
+
+    const r = if (std.mem.eql(u8, ex.stem, "vector_add"))
+        try runVectorAdd(gpa, &ctx, func, args, out)
+    else if (std.mem.eql(u8, ex.stem, "shared_reverse"))
+        try runSharedReverse(gpa, &ctx, func, args, out)
+    else if (std.mem.eql(u8, ex.stem, "warp_reduce"))
+        try runWarpReduce(gpa, &ctx, func, args, out)
+    else
+        try runAtomicCounter(gpa, &ctx, func, args, out);
+    return r;
+}
+
+fn fail(out: *std.Io.Writer, comptime fmt: []const u8, a: anytype) !u8 {
+    try out.print("FAIL: " ++ fmt ++ "\n", a);
+    return 1;
+}
+
+fn runVectorAdd(gpa: std.mem.Allocator, ctx: *cu.Context, func: cu.Function, args: RunArgs, out: *std.Io.Writer) !u8 {
+    const n = args.n;
+    const block: u32 = args.block orelse 256;
+    const grid: u32 = args.grid orelse @intCast((n + block - 1) / block);
+    try out.print("vector_add: n={d} grid={d} block={d}\n", .{ n, grid, block });
+
+    const bytes = n * @sizeOf(f32);
+    const a = try gpa.alloc(f32, n);
+    defer gpa.free(a);
+    const b = try gpa.alloc(f32, n);
+    defer gpa.free(b);
+    const c = try gpa.alloc(f32, n);
+    defer gpa.free(c);
+    for (a, 0..) |*v, i| v.* = @floatFromInt(i);
+    for (b, 0..) |*v, i| v.* = @floatFromInt(2 * i);
+    @memset(c, 0);
+
+    const da = try ctx.alloc(bytes);
+    defer ctx.free(da);
+    const db = try ctx.alloc(bytes);
+    defer ctx.free(db);
+    const dc = try ctx.alloc(bytes);
+    defer ctx.free(dc);
+    try ctx.copyHtoD(da, std.mem.sliceAsBytes(a));
+    try ctx.copyHtoD(db, std.mem.sliceAsBytes(b));
+    try ctx.copyHtoD(dc, std.mem.sliceAsBytes(c));
+
+    var arg_da = da;
+    var arg_db = db;
+    var arg_dc = dc;
+    var arg_n: u32 = @intCast(n);
+    var params = [_]?*anyopaque{ &arg_da, &arg_db, &arg_dc, &arg_n };
+    try func.launch(grid, 1, 1, block, 1, 1, &params);
+    try ctx.synchronize();
+    try ctx.copyDtoH(std.mem.sliceAsBytes(c), dc);
+
+    var bad: usize = 0;
+    var max_err: f64 = 0;
+    for (c, 0..) |v, i| {
+        const want: f64 = @floatFromInt(3 * i);
+        const err = @abs(@as(f64, v) - want);
+        if (err > max_err) max_err = err;
+        if (err != 0) bad += 1;
+    }
+    if (bad > 0) return fail(out, "vector_add: {d}/{d} mismatches, max err {d}", .{ bad, n, max_err });
+    try out.print("PASS: vector_add n={d}, max err {d}\n", .{ n, max_err });
+    return 0;
+}
+
+fn runSharedReverse(gpa: std.mem.Allocator, ctx: *cu.Context, func: cu.Function, args: RunArgs, out: *std.Io.Writer) !u8 {
+    const block: u32 = 256; // must match block_size in shared_reverse.zig
+    const grid: u32 = args.grid orelse @intCast(@max(1, args.n / block));
+    const n: usize = @as(usize, grid) * block;
+    try out.print("shared_reverse: n={d} grid={d} block={d}\n", .{ n, grid, block });
+
+    const bytes = n * @sizeOf(f32);
+    const input = try gpa.alloc(f32, n);
+    defer gpa.free(input);
+    const result = try gpa.alloc(f32, n);
+    defer gpa.free(result);
+    for (input, 0..) |*v, i| v.* = @floatFromInt(i);
+    @memset(result, 0);
+
+    const din = try ctx.alloc(bytes);
+    defer ctx.free(din);
+    const dout = try ctx.alloc(bytes);
+    defer ctx.free(dout);
+    try ctx.copyHtoD(din, std.mem.sliceAsBytes(input));
+    try ctx.copyHtoD(dout, std.mem.sliceAsBytes(result));
+
+    var arg_in = din;
+    var arg_out = dout;
+    var params = [_]?*anyopaque{ &arg_in, &arg_out };
+    try func.launch(grid, 1, 1, block, 1, 1, &params);
+    try ctx.synchronize();
+    try ctx.copyDtoH(std.mem.sliceAsBytes(result), dout);
+
+    var bad: usize = 0;
+    for (0..grid) |g| {
+        for (0..block) |t| {
+            if (result[g * block + t] != input[g * block + (block - 1 - t)]) bad += 1;
+        }
+    }
+    if (bad > 0) return fail(out, "shared_reverse: {d}/{d} mismatches", .{ bad, n });
+    try out.print("PASS: shared_reverse n={d}\n", .{n});
+    return 0;
+}
+
+fn runWarpReduce(gpa: std.mem.Allocator, ctx: *cu.Context, func: cu.Function, args: RunArgs, out: *std.Io.Writer) !u8 {
+    const block: u32 = 256; // must match block_size in warp_reduce.zig
+    const grid: u32 = args.grid orelse @intCast(@max(1, args.n / block));
+    const n: usize = @as(usize, grid) * block;
+    try out.print("warp_reduce: n={d} grid={d} block={d}\n", .{ n, grid, block });
+
+    const input = try gpa.alloc(f32, n);
+    defer gpa.free(input);
+    for (input, 0..) |*v, i| v.* = @floatFromInt(i % 8);
+
+    const din = try ctx.alloc(n * @sizeOf(f32));
+    defer ctx.free(din);
+    const dout = try ctx.alloc(grid * @sizeOf(f32));
+    defer ctx.free(dout);
+    try ctx.copyHtoD(din, std.mem.sliceAsBytes(input));
+
+    var arg_in = din;
+    var arg_out = dout;
+    var params = [_]?*anyopaque{ &arg_in, &arg_out };
+    try func.launch(grid, 1, 1, block, 1, 1, &params);
+    try ctx.synchronize();
+
+    const sums = try gpa.alloc(f32, grid);
+    defer gpa.free(sums);
+    try ctx.copyDtoH(std.mem.sliceAsBytes(sums), dout);
+
+    var bad: usize = 0;
+    var max_err: f64 = 0;
+    for (0..grid) |g| {
+        var want: f64 = 0;
+        for (0..block) |t| want += input[g * block + t];
+        const err = @abs(@as(f64, sums[g]) - want);
+        if (err > max_err) max_err = err;
+        if (err > 1e-3) bad += 1;
+    }
+    if (bad > 0) return fail(out, "warp_reduce: {d}/{d} block sums wrong, max err {d}", .{ bad, grid, max_err });
+    try out.print("PASS: warp_reduce grid={d}, max err {d}\n", .{ grid, max_err });
+    return 0;
+}
+
+fn runAtomicCounter(gpa: std.mem.Allocator, ctx: *cu.Context, func: cu.Function, args: RunArgs, out: *std.Io.Writer) !u8 {
+    const block: u32 = 256;
+    const grid: u32 = args.grid orelse 64;
+    try out.print("atomic_counter: grid={d} block={d}\n", .{ grid, block });
+
+    var zero32: u32 = 0;
+    var zero_f: f32 = 0;
+    const hist_zeros = try gpa.alloc(u32, 16);
+    defer gpa.free(hist_zeros);
+    @memset(hist_zeros, 0);
+
+    const dcount = try ctx.alloc(@sizeOf(u32));
+    defer ctx.free(dcount);
+    const dfsum = try ctx.alloc(@sizeOf(f32));
+    defer ctx.free(dfsum);
+    const dhist = try ctx.alloc(16 * @sizeOf(u32));
+    defer ctx.free(dhist);
+    try ctx.copyHtoD(dcount, std.mem.asBytes(&zero32));
+    try ctx.copyHtoD(dfsum, std.mem.asBytes(&zero_f));
+    try ctx.copyHtoD(dhist, std.mem.sliceAsBytes(hist_zeros));
+
+    var arg_count = dcount;
+    var arg_fsum = dfsum;
+    var arg_hist = dhist;
+    var params = [_]?*anyopaque{ &arg_count, &arg_fsum, &arg_hist };
+    try func.launch(grid, 1, 1, block, 1, 1, &params);
+    try ctx.synchronize();
+
+    try ctx.copyDtoH(std.mem.asBytes(&zero32), dcount);
+    try ctx.copyDtoH(std.mem.asBytes(&zero_f), dfsum);
+    try ctx.copyDtoH(std.mem.sliceAsBytes(hist_zeros), dhist);
+
+    const total: u64 = @as(u64, grid) * block;
+    var bad: usize = 0;
+    if (zero32 != total) bad += 1;
+    if (zero_f != @as(f32, @floatFromInt(total))) bad += 1;
+    // bins 1..15: grid * (block/16) each; bin 0 gets + block per block
+    for (hist_zeros, 0..) |v, k| {
+        const want: u32 = grid * (block / 16) + if (k == 0) grid * block else 0;
+        if (v != want) bad += 1;
+    }
+    if (bad > 0) return fail(out, "atomic_counter: count={d} (want {d}), fsum={d}, hist={any}", .{ zero32, total, zero_f, hist_zeros });
+    try out.print("PASS: atomic_counter count={d} fsum={d}\n", .{ zero32, zero_f });
+    return 0;
+}

@@ -1,4 +1,5 @@
 const std = @import("std");
+const run_cmd = @import("run.zig");
 
 /// Baseline GPU: NVIDIA H20 (Hopper, compute capability 9.0).
 const default_sm = "sm_90";
@@ -30,6 +31,8 @@ pub fn main(init: std.process.Init) !u8 {
         return cmdCubin(gpa, io, init.environ_map, args[2..]);
     } else if (std.mem.eql(u8, cmd, "doctor")) {
         return cmdDoctor(gpa, io, init.environ_map, args[2..]);
+    } else if (std.mem.eql(u8, cmd, "run")) {
+        return cmdRun(gpa, io, init.environ_map, args[2..]);
     } else if (std.mem.eql(u8, cmd, "help") or std.mem.eql(u8, cmd, "--help") or std.mem.eql(u8, cmd, "-h")) {
         usage();
         return 0;
@@ -47,6 +50,8 @@ fn usage() void {
         \\  zoxide ptx <kernel.zig> -o out.ptx [--arch sm_XX]     compile Zig source to PTX via zig (default {s})
         \\  zoxide cubin <in.ptx> -o out.cubin [--arch sm_XX]     assemble PTX via ptxas (default {s})
         \\  zoxide doctor [--arch sm_XX]                          probe zig / nvptx / ptxas / libNVVM / GPU
+        \\  zoxide run <example.ptx|.cubin> [--kernel name] [--n N] [--grid G --block B] [--arch sm_XX]
+        \\                                                       run an example kernel on the GPU and verify results
         \\  supported arch values: {s}
         \\
     , .{ default_sm, default_sm, "sm_75 sm_80 sm_86 sm_89 sm_90 sm_100 sm_120" });
@@ -153,6 +158,76 @@ fn cmdCubin(gpa: std.mem.Allocator, io: std.Io, env: *std.process.Environ.Map, a
     }
     std.debug.print("wrote cubin: {s}\n", .{parsed.output});
     return 0;
+}
+
+/// Assemble PTX to cubin via ptxas (shared by `cubin` and `run`).
+fn assemblePtx(gpa: std.mem.Allocator, io: std.Io, env: *std.process.Environ.Map, in_ptx: []const u8, out_cubin: []const u8, arch: []const u8) !void {
+    const ptxas = findPtxas(gpa, io, env) orelse return error.PtxasNotFound;
+    defer gpa.free(ptxas);
+    const arch_arg = try std.fmt.allocPrint(gpa, "-arch={s}", .{arch});
+    defer gpa.free(arch_arg);
+    const result = try std.process.run(gpa, io, .{
+        .argv = &.{ ptxas, arch_arg, "-o", out_cubin, in_ptx },
+    });
+    defer gpa.free(result.stdout);
+    defer gpa.free(result.stderr);
+    if (!termOk(result.term)) return error.PtxasFailed;
+}
+
+fn cmdRun(gpa: std.mem.Allocator, io: std.Io, env: *std.process.Environ.Map, args: []const [:0]const u8) !u8 {
+    var ra: run_cmd.RunArgs = .{ .input = "" };
+    var have_input = false;
+    var i: usize = 0;
+    while (i < args.len) : (i += 1) {
+        const a = args[i];
+        const needValue = struct {
+            fn get(rest: []const [:0]const u8, idx: *usize) ?[]const u8 {
+                idx.* += 1;
+                if (idx.* >= rest.len) return null;
+                return rest[idx.*];
+            }
+        }.get;
+        if (std.mem.eql(u8, a, "--kernel")) {
+            ra.kernel_name = needValue(args, &i) orelse return usageErr("run: --kernel requires a value");
+        } else if (std.mem.eql(u8, a, "--n")) {
+            const v = needValue(args, &i) orelse return usageErr("run: --n requires a value");
+            ra.n = std.fmt.parseInt(usize, v, 10) catch return usageErr("run: --n must be a positive integer");
+        } else if (std.mem.eql(u8, a, "--grid")) {
+            const v = needValue(args, &i) orelse return usageErr("run: --grid requires a value");
+            ra.grid = std.fmt.parseInt(u32, v, 10) catch return usageErr("run: --grid must be a positive integer");
+        } else if (std.mem.eql(u8, a, "--block")) {
+            const v = needValue(args, &i) orelse return usageErr("run: --block requires a value");
+            ra.block = std.fmt.parseInt(u32, v, 10) catch return usageErr("run: --block must be a positive integer");
+        } else if (std.mem.eql(u8, a, "--arch")) {
+            const v = needValue(args, &i) orelse return usageErr("run: --arch requires a value");
+            if (!validateArch(v)) {
+                std.debug.print("error: invalid arch '{s}'; expected one of: {s}\n", .{ v, "sm_75 sm_80 sm_86 sm_89 sm_90 sm_100 sm_120" });
+                return 1;
+            }
+            ra.arch = v;
+        } else if (!have_input) {
+            ra.input = a;
+            have_input = true;
+        } else {
+            return usageErr("run: unexpected argument");
+        }
+    }
+    if (!have_input) return usageErr("expected 'zoxide run <example.ptx|.cubin> [--kernel name] [--n N] [--grid G --block B] [--arch sm_XX]'");
+    if (!fileExists(io, ra.input)) {
+        std.debug.print("error: input file not found: '{s}'\n", .{ra.input});
+        return 1;
+    }
+
+    var buf: [4096]u8 = undefined;
+    var w = std.Io.File.stdout().writerStreaming(io, &buf);
+    const out = &w.interface;
+    defer out.flush() catch {};
+    return run_cmd.run(gpa, io, env, ra, assemblePtx, out);
+}
+
+fn usageErr(msg: []const u8) u8 {
+    std.debug.print("error: {s}\n", .{msg});
+    return 1;
 }
 
 fn cmdDoctor(gpa: std.mem.Allocator, io: std.Io, env: *std.process.Environ.Map, args: []const [:0]const u8) !u8 {

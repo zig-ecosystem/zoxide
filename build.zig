@@ -40,6 +40,10 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path("src/main.zig"),
             .target = target,
             .optimize = optimize,
+            // libc everywhere: the host runner dlopens libcuda. For gnu
+            // targets this yields a dynamic binary (DlDynLib); musl static
+            // still links statically but falls back to ElfDynLib.
+            .link_libc = true,
         }),
     });
     b.installArtifact(exe);
