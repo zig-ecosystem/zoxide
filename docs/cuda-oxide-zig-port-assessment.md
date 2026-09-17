@@ -63,7 +63,7 @@ Rust 源码 → rustc MIR → Pliron（Rust 实现的类 MLIR IR）方言
 
 即使把 `cuda-oxide-codegen` 之后的所有东西都搬到 Zig，仍然缺一块：**谁产出 `dialect-mir` 等价的 IR？** 目前答案是 rustc。而该 IR 明确声明"不是跨版本稳定的交换格式"。所以 Zig 路线的真实选项是：
 
-- **方案 A（推荐）：做 Zig 版的"CUDA 单源编译器"，而非移植。** 用 Zig 语言本身作为 kernel 语言：Zig 已有 NVPTX 后端目标（`nvptx64-nvidia-cuda`），可以基于 `intrinsics/catalog.json` 数据生成 Zig 的 PTX 内建函数绑定，加上 Zig 版的 PTX 解析/产物嵌入/ptxas 编排工具。这是"Zig 原生重实现"——借鉴其设计与数据，而非搬运代码——产出物对 Zig 生态真正有用。
+- **方案 A（推荐）：做 Zig 版的"CUDA 单源编译器"，而非移植。** 用 Zig 语言本身作为 kernel 语言：Zig 已有 NVPTX 后端目标（`nvptx64-nvidia-cuda`），可以基于 `intrinsics/catalog.json` 数据生成 Zig 的 PTX 内建函数绑定，加上 Zig 版的 PTX 解析/产物嵌入/ptxas 编排工具。这是"Zig 实现"路线——借鉴其设计与数据，而非搬运代码——产出物对 Zig 生态真正有用。
 - **方案 B：只移植外围工具链。** 把 3.2 中的组件搬过来，链路里的 Rust 部分照旧（cuda-oxide 继续负责 MIR→.ll，Zig 工具负责 .ll 之后的编排与终结）。价值有限，但工作量小、风险低。
 - **方案 C：完整移植。** 需要在 Zig 中重建 Rust 前端到 MIR 等价物的通路 + rustc 布局预言机 + 类 MLIR IR 栈。工作量与"重写一个 Rust 编译器后端生态"相当，**不建议**。
 

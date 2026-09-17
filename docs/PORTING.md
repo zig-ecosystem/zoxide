@@ -1,7 +1,7 @@
 # zoxide：cuda-oxide → Zig 能力对照与移植规划
 
 > 2026-09-17 · 配套文档：`cuda-oxide-zig-port-assessment.md`（可行性评估）
-> 前提结论：不做代码级整体移植，走"Zig 原生重实现"路线——Zig 原生 NVPTX 后端 + 复用 cuda-oxide 的数据与设计。
+> 前提结论：不做代码级整体移植，走"Zig 实现"路线——Zig 原生 NVPTX 后端 + 复用 cuda-oxide 的数据与设计。
 > 已完成里程碑 M0：`zoxide/` 骨架（kernel→PTX→ptxas 编排→doctor），见文末。
 
 ## 一、能力对照总表
