@@ -123,7 +123,9 @@ kernel.zig → PTX（NVPTX 后端）→ ptxas 编排 → doctor。**结论：路
 
 ## 五、已知 Zig 0.16 NVPTX 陷阱（M0 踩坑记录）
 
-1. `export fn` + kernel callconv 会触发 LLVM alias bug（"NVPTX aliasee must be a non-kernel function definition"）。变通：`pub fn ... callconv(.kernel)` + 有函数体的 dummy export 物化 kernel 指针；PTX 中符号名带 `kernel_$_` 前缀，host 端 `cuModuleGetFunction` 需用该名。
-2. 需 `.strip = true` / `-fstrip`，否则 PTX `.target` 行带 `, debug` 后缀。
-3. `bundle_ubsan_rt = false`（UBSan runtime 同样触发 alias bug）。
-4. target 写法：`nvptx64-cuda`（三段式 `nvptx64-nvidia-cuda` 报 UnknownOperatingSystem）。
+1. **`asm` 模板不做操作数替换**（语言层面设计，非 bug）：`$0`/`%0`/`${0}`/具名操作数全部原样输出到 PTX，ptxas 报 "Unknown symbol '$0'"。Zig 推荐的 `{reg}` 约束在 NVPTX 不可用（无具名物理寄存器）。**解法：直接调 LLVM NVVM intrinsics**（`extern fn @"llvm.nvvm.read.ptx.sreg.tid.x"() i32` 等）——这也让设备端库路线从"inline asm 封装"升级为"NVVM intrinsic 绑定"，更类型安全；注意该能力是 ziglang/zig#2291 记录的意外暴露，未来 zig 版本可能收紧。
+2. `export fn` + kernel callconv 会触发 LLVM alias bug（"NVPTX aliasee must be a non-kernel function definition"）。变通：`pub fn ... callconv(.kernel)` + 有函数体的 dummy export 物化 kernel 指针；PTX 中符号名带 `kernel_$_` 前缀，host 端 `cuModuleGetFunction` 需用该名。
+3. 需 `.strip = true` / `-fstrip`，否则 PTX `.target` 行带 `, debug` 后缀。
+4. `bundle_ubsan_rt = false`（UBSan runtime 同样触发 alias bug）。
+5. target 写法：`nvptx64-cuda`（三段式 `nvptx64-nvidia-cuda` 报 UnknownOperatingSystem）。
+6. **本机无 ptxas 意味着 PTX 只能生成不能汇编**：M0 的 PTX 实际到 pod 上才被 ptxas 验收——凡是改 kernel 编译通路，pod 复验是必要步骤。

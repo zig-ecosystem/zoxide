@@ -56,8 +56,17 @@ Both produce statically linked ELF executables (verified with `file`).
 
 ## Notes on the kernel (`src/kernel.zig`)
 
-- Freestanding vector-add kernel; reads `%tid.x` / `%ctaid.x` / `%ntid.x` via
-  Zig inline asm to compute the global thread id.
+- Freestanding vector-add kernel; reads `%tid.x` / `%ctaid.x` / `%ntid.x` to
+  compute the global thread id.
+- **Do not use inline asm with `$0`/`%0` operand placeholders.** Zig emits
+  asm templates verbatim (no LLVM template substitution — this is zig-wide,
+  not NVPTX-specific), so `mov.u32 $0, %tid.x;` leaks a literal `$0` into the
+  PTX and ptxas rejects it (`Arguments mismatch for instruction 'mov'` /
+  `Unknown symbol '$0'`). Instead, call the LLVM NVVM intrinsics directly:
+  `extern fn @"llvm.nvvm.read.ptx.sreg.tid.x"() i32;` etc. They lower to
+  proper `mov.u32 %rN, %tid.x;` instructions that ptxas accepts. (The
+  `@"llvm.*"` intrinsic access is technically an accident of the compiler —
+  ziglang/zig#2291 — and may be restricted in a future release.)
 - The kernel is `pub fn ... callconv(.kernel)` (not `export fn`): zig 0.16 +
   LLVM's NVPTX backend rejects `export` on kernel functions ("NVPTX aliasee
   must be a non-kernel function definition"). A dummy `export fn
