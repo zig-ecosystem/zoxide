@@ -1,8 +1,8 @@
 # zoxide
 
 A Zig-native CUDA kernel development skeleton — the first milestone of a
-spiritual port of [cuda-oxide](https://github.com/Rust-GPU/cuda-oxide) (a
-Rust CUDA compiler) to the Zig ecosystem. Target GPU: NVIDIA H20 (Hopper,
+Zig-native reimplementation inspired by [cuda-oxide](https://github.com/Rust-GPU/cuda-oxide)
+(a Rust CUDA compiler). Target GPU: NVIDIA H20 (Hopper,
 compute capability 9.0, `sm_90`). No GPU or CUDA toolkit is required to
 produce PTX; only `ptxas` (for cubin assembly) comes from CUDA.
 
