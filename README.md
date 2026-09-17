@@ -15,7 +15,8 @@ produce PTX; only `ptxas` (for cubin assembly) comes from CUDA.
 
 ```sh
 zig build           # builds the `zoxide` CLI into zig-out/bin/
-zig build kernel    # compiles src/kernel.zig to PTX at zig-out/kernel.ptx (sm_90)
+zig build kernels   # compiles every kernel in src/examples/ to zig-out/kernels/<name>.ptx (sm_90)
+zig build kernel    # single default kernel -> zig-out/kernels/kernel.ptx (kept for compat)
 
 zig-out/bin/zoxide doctor [--arch sm_90]                       # probe toolchain + GPU
 zig-out/bin/zoxide ptx src/kernel.zig -o out.ptx [--arch sm_90]  # Zig source -> PTX
@@ -53,6 +54,62 @@ zig build -Dtarget=aarch64-linux-musl --prefix zig-out/aarch64-linux-musl
 ```
 
 Both produce statically linked ELF executables (verified with `file`).
+
+## Device-side library (`src/cuda.zig`)
+
+Freestanding (no host std); all device operations go through LLVM NVVM
+intrinsics or Zig builtins. API overview:
+
+| API | Lowers to |
+|---|---|
+| `threadIdx() / blockIdx() / blockDim() / gridDim()` → `Idx3{x,y,z}` | `llvm.nvvm.read.ptx.sreg.{tid,ctaid,ntid,nctaid}.{x,y,z}` |
+| `laneId()`, `warpId()` (in-block), `globalThreadId()` | `...sreg.laneid`, `tid.x/32`, `ctaid.x*ntid.x+tid.x` |
+| `syncThreads()` | `llvm.nvvm.barrier0` → `bar.sync 0` |
+| `syncWarp(mask)` | `llvm.nvvm.bar.warp.sync` |
+| `shflDownSync / shflUpSync / shflXorSync / shflIdxSync(T, mask, val, off)` for `i32/u32/f32` | `llvm.nvvm.shfl.sync.{down,up,bfly,idx}.i32` (f32 via bitcast) |
+| `atomicAdd(T, ptr, val)` for `u32/u64/f32`, global or shared pointers | Zig `@atomicRmw` → single `atom.{global,shared}.add.*` |
+| `Keep(.{ &kernelA, &kernelB })` | dummy-export DCE workaround, see below |
+
+Example kernel skeleton:
+
+```zig
+const cuda = @import("cuda");
+
+pub fn myKernel(out: [*]f32) callconv(.kernel) void {
+    const gid = cuda.globalThreadId();
+    out[gid] = 1.0;
+}
+
+comptime {
+    _ = cuda.Keep(.{&myKernel}).__zoxide_keep_kernels;
+}
+```
+
+The kernel's PTX symbol is mangled (`mykernel_$_myKernel`); the host must
+look it up under that name.
+
+## Example kernels (`src/examples/`)
+
+- `vector_add.zig` — c = a + b, one f32 per thread (`globalThreadId`)
+- `shared_reverse.zig` — per-block array reversal via shared memory +
+  `syncThreads` (PTX shows `.shared` decl + `st.shared`/`ld.shared`)
+- `warp_reduce.zig` — block-wide sum: `shflDownSync` within warps, shared
+  memory + `syncThreads` across warps (`shfl.sync.down.b32`, `bar.sync 0`)
+- `atomic_counter.zig` — `atomicAdd` on global u32/f32, histogram bins, and a
+  shared-memory counter (`atom.global.add.*`, `atom.shared.add.u32`)
+
+## Shared memory: verified approach
+
+Declare a container-level variable with `addrspace(.shared)`:
+
+```zig
+var tile: [256]f32 addrspace(.shared) = undefined;
+```
+
+Zig 0.16 accepts this and the NVPTX backend emits a per-block
+`.shared .align 4 .b8 <mangled>[1024];` declaration inside the `.entry`;
+loads/stores lower to `ld.shared.b32` / `st.shared.b32`. No intrinsic or
+`@ptrFromInt` fallback is needed.
 
 ## Notes on the kernel (`src/kernel.zig`)
 

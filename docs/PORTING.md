@@ -73,13 +73,13 @@ kernel.zig → PTX（NVPTX 后端）→ ptxas 编排 → doctor。**结论：路
 
 目标：用户能在 Zig 里写一个非平凡 kernel 并在真机上跑起来。
 
-1. `src/cuda/*.zig` 设备端库：`threadIdx()`/`blockIdx()`/`syncThreads()`/warp shuffle/基础原子，inline asm 封装
-2. 共享内存支持验证（Zig addrspace 或 asm 退路）——**本阶段最大技术验证点**
-3. `zoxide ptx` 暴露 `--arch sm_XX`；arch 数据接入（复用 cuda-target-spec 数据）
-4. build.zig 集成：`kernel` step 参数化（多 kernel、arch、优化级别）
-5. 真机验证：在有 NVIDIA GPU + CUDA Toolkit 的机器上 `cubin` + 加载运行（需要借用/申请环境）
+1. `src/cuda/*.zig` 设备端库：`threadIdx()`/`blockIdx()`/`syncThreads()`/warp shuffle/基础原子 ✅ `src/cuda.zig`（NVVM intrinsics；原子直接用 Zig 内建 `@atomicRmw`）
+2. 共享内存支持验证 ✅——容器级 `var tile: [N]f32 addrspace(.shared)` 原生可行，PTX 出现 `.shared` 段与 `ld/st.shared`
+3. `zoxide ptx` 暴露 `--arch sm_XX`；arch 数据接入 ✅（v0.0.1-alpha）
+4. build.zig 集成：✅ `zig build kernels` 编译全部示例
+5. 真机验证：⏳ 4 个示例 PTX 待 H20 pod 上 ptxas 汇编确认；kernel 实际加载运行依赖 M2 host runner
 
-验收：`examples/vector_add` 与 `examples/sgemm_naive`（含共享内存 tile）端到端通过。
+验收：`examples/vector_add` 与 `examples/sgemm_naive`（含共享内存 tile）端到端通过。（当前已有 vector_add/shared_reverse/warp_reduce/atomic_counter 四个示例，端到端运行待 M2）
 
 ### M2 —— Host 侧闭环（预计 4–7 天）
 
