@@ -178,73 +178,98 @@ fn cmdDoctor(gpa: std.mem.Allocator, io: std.Io, env: *std.process.Environ.Map, 
         }
     }
 
-    var ok = true;
+    var any_fail = false;
 
-    print(io, "zig: ", .{});
+    // --- compile workflow: zig -> PTX ---
+    var zig_ok = false;
     if (std.process.run(gpa, io, .{ .argv = &.{ "zig", "version" } }) catch null) |res| {
         defer gpa.free(res.stdout);
         defer gpa.free(res.stderr);
         if (termOk(res.term)) {
-            print(io, "{s}", .{res.stdout});
+            zig_ok = true;
+            print(io, "[ok  ] zig: {s}", .{res.stdout});
         } else {
-            print(io, "present but 'zig version' failed\n", .{});
-            ok = false;
+            print(io, "[warn] zig: present but 'zig version' failed\n", .{});
         }
     } else {
-        print(io, "not found on PATH\n", .{});
-        ok = false;
+        print(io, "[warn] zig: not found on PATH (only needed to compile .zig -> PTX)\n", .{});
     }
 
-    print(io, "nvptx64 target: ", .{});
-    if (std.process.run(gpa, io, .{ .argv = &.{ "zig", "targets" } }) catch null) |res| {
-        defer gpa.free(res.stdout);
-        defer gpa.free(res.stderr);
-        if (termOk(res.term) and std.mem.indexOf(u8, res.stdout, "\"nvptx64\"") != null) {
-            print(io, "available\n", .{});
+    var nvptx_ok = false;
+    if (zig_ok) {
+        if (std.process.run(gpa, io, .{ .argv = &.{ "zig", "targets" } }) catch null) |res| {
+            defer gpa.free(res.stdout);
+            defer gpa.free(res.stderr);
+            if (termOk(res.term) and std.mem.indexOf(u8, res.stdout, "\"nvptx64\"") != null) {
+                nvptx_ok = true;
+                print(io, "[ok  ] nvptx64 target: available\n", .{});
+            } else {
+                print(io, "[warn] nvptx64 target: NOT available in this zig build\n", .{});
+            }
         } else {
-            print(io, "NOT available\n", .{});
-            ok = false;
+            print(io, "[warn] nvptx64 target: unknown (no zig)\n", .{});
         }
     } else {
-        print(io, "unknown (no zig)\n", .{});
-        ok = false;
+        print(io, "[warn] nvptx64 target: unknown (no zig)\n", .{});
     }
 
-    print(io, "ptxas: ", .{});
+    // --- assemble workflow: PTX -> cubin ---
+    var ptxas_ok = false;
     if (findPtxas(gpa, io, env)) |p| {
         defer gpa.free(p);
-        print(io, "{s}\n", .{p});
+        ptxas_ok = true;
+        print(io, "[ok  ] ptxas: {s}\n", .{p});
     } else {
-        print(io, "not found (PATH, $CUDA_HOME/bin, /usr/local/cuda/bin)\n", .{});
+        print(io, "[warn] ptxas: not found (PATH, $CUDA_HOME/bin, /usr/local/cuda/bin); only needed for 'zoxide cubin'\n", .{});
     }
 
-    print(io, "libNVVM: ", .{});
+    // --- future LTOIR route ---
     if (findLibNvvm()) |name| {
-        print(io, "found ({s})\n", .{name});
+        print(io, "[ok  ] libNVVM: found ({s})\n", .{name});
     } else {
-        print(io, "not found (dlopen probe failed for libnvvm variants)\n", .{});
+        print(io, "[info] libNVVM: not found (only needed for a future LTOIR route)\n", .{});
     }
 
-    print(io, "gpu: ", .{});
-    if (probeGpu(gpa, io)) |gpu| {
-        defer gpa.free(gpu.name);
-        defer gpa.free(gpu.cc);
-        defer gpa.free(gpu.driver);
-        print(io, "{s} (compute capability {s}, driver {s})\n", .{ gpu.name, gpu.cc, gpu.driver });
+    // --- run workflow: GPU ---
+    var gpu: ?GpuInfo = null;
+    defer if (gpu) |g| {
+        gpa.free(g.name);
+        gpa.free(g.cc);
+        gpa.free(g.driver);
+    };
+    if (probeGpu(gpa, io)) |g| {
+        gpu = g;
+        print(io, "[ok  ] gpu: {s} (compute capability {s}, driver {s})\n", .{ g.name, g.cc, g.driver });
         if (want_arch) |a| {
-            const gpu_sm = ccToSm(gpu.cc);
+            const gpu_sm = ccToSm(g.cc);
             if (!std.mem.eql(u8, a, &gpu_sm)) {
-                print(io, "warning: requested arch {s} does not match this GPU ({s}); cubins are not forward-compatible across major CC\n", .{ a, gpu_sm });
+                print(io, "[fail] arch check: requested {s} does not match this GPU ({s}); cubins are not forward-compatible across major CC\n", .{ a, gpu_sm });
+                any_fail = true;
             } else {
-                print(io, "arch check: {s} matches this GPU\n", .{a});
+                print(io, "[ok  ] arch check: {s} matches this GPU\n", .{a});
             }
         }
     } else {
-        print(io, "no GPU visible (nvidia-smi missing or failed)\n", .{});
+        print(io, "[warn] gpu: no GPU visible (nvidia-smi missing or failed); fine on a dev machine\n", .{});
     }
 
-    print(io, "doctor: {s}\n", .{if (ok) "core toolchain OK" else "problems found"});
-    return if (ok) 0 else 1;
+    print(io, "summary:\n", .{});
+    if (zig_ok and nvptx_ok) {
+        print(io, "  compile (zig -> PTX):      ready\n", .{});
+    } else if (zig_ok) {
+        print(io, "  compile (zig -> PTX):      unavailable (no nvptx64 backend)\n", .{});
+    } else {
+        print(io, "  compile (zig -> PTX):      unavailable (zig not found)\n", .{});
+    }
+    print(io, "  assemble (ptxas -> cubin): {s}\n", .{if (ptxas_ok) "ready" else "unavailable (ptxas not found)"});
+    if (gpu) |g| {
+        const gpu_sm = ccToSm(g.cc);
+        print(io, "  run (GPU):                 ready — {s}, {s}\n", .{ g.name, gpu_sm });
+    } else {
+        print(io, "  run (GPU):                 unavailable (no GPU visible)\n", .{});
+    }
+
+    return if (any_fail) 1 else 0;
 }
 
 const GpuInfo = struct { name: []u8, cc: []u8, driver: []u8 };

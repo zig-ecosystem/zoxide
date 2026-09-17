@@ -28,12 +28,22 @@ Supported arch values: `sm_75 sm_80 sm_86 sm_89 sm_90 sm_100 sm_120`
 `zoxide ptx` shells out to
 `zig build-lib -target nvptx64-cuda -mcpu <arch> -fstrip -fno-ubsan-rt -fno-emit-bin -femit-asm=... -O ReleaseFast`.
 
-`zoxide doctor` also probes the GPU via
-`nvidia-smi --query-gpu=name,compute_cap,driver_version --format=csv,noheader`;
-with no GPU (or no nvidia-smi) it reports "no GPU visible" and still exits 0.
-When a GPU is found and `--arch` is passed, it warns if the arch does not
-match the GPU's compute capability (e.g. `sm_90` code cannot run on a CC 8.6
-card).
+`zoxide doctor` probes zig, the nvptx64 backend, ptxas, libNVVM and the GPU
+(via `nvidia-smi --query-gpu=name,compute_cap,driver_version
+--format=csv,noheader`). Every probe is tagged by severity:
+
+- `[ok]` — present and working
+- `[info]` — absent but only relevant to a future feature (libNVVM / LTOIR)
+- `[warn]` — absent; only blocks part of the workflow (zig → can't compile
+  new PTX; ptxas → can't assemble cubins; no GPU → fine on a dev machine)
+- `[fail]` — a real error (e.g. `--arch sm_90` passed while the visible GPU
+  is CC 8.6: the cubin would not load)
+
+The exit code is 1 only when a `[fail]` item is present; `--arch` with an
+invalid value is a usage error and also exits 1. The closing `summary:`
+block reports readiness per workflow — `compile (zig -> PTX)`,
+`assemble (ptxas -> cubin)`, `run (GPU)` — so a GPU pod without zig
+correctly reports compile-unavailable but assemble/run-ready, exit 0.
 
 ## Cross-compiling for a Linux GPU pod
 
