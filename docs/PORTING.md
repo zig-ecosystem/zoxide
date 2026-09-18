@@ -81,14 +81,14 @@ kernel.zig → PTX（NVPTX 后端）→ ptxas 编排 → doctor。**结论：路
 
 验收：`examples/vector_add` 与 `examples/sgemm_naive`（含共享内存 tile）端到端通过。（当前已有 vector_add/shared_reverse/warp_reduce/atomic_counter 四个示例，端到端运行待 M2）
 
-### M2 —— Host 侧闭环（预计 4–7 天）
+### M2 —— Host 侧闭环（预计 4–7 天）✅ 已在 H20 pod 真机验收
 
-1. libcuda dlopen 绑定（cuInit/cuModuleLoad/cuLaunchKernel/…，约 30–50 个函数起步）
-2. `@embedFile` cubin + comptime 生成类型化 launch API（对标 `#[cuda_module]`）
-3. gpu_printf 封装
-4. `zoxide run` 一条命令：编译 kernel → cubin → 加载 → 启动 → 校验输出
+1. libcuda dlopen 绑定（cuInit/cuModuleLoad/cuLaunchKernel/…，约 30–50 个函数起步）✅ `src/cuda_driver.zig`（16 函数，手写 extern + dlopen `libcuda.so.1`）
+2. `@embedFile` cubin + comptime 生成类型化 launch API（对标 `#[cuda_module]`）—— 未做，降级为 M4 候选（当前 `zoxide run` CLI 形态已满足验证需求）
+3. gpu_printf 封装 —— 未做（生成器已含 vprintf intrinsic 映射，封装留 M4）
+4. `zoxide run` 一条命令：编译 kernel → cubin → 加载 → 启动 → 校验输出 ✅
 
-验收：host+device 单文件（或单包）体验，vector_add 全自动端到端。
+验收：host+device 单文件（或单包）体验，vector_add 全自动端到端。——**已验收（2026-09-18，H20 pod，driver 550.90.07，ptxas 12.8）**：vector_add / shared_reverse / warp_reduce / atomic_counter 四个示例全部 PASS，含一次真实 bug 修复（barrier 跨分支复制死锁，与 cuda-oxide JumpThreading 问题同类）。
 
 ### M3 —— intrinsics 全量生成（预计 1–2 周）
 
