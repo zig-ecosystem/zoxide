@@ -53,6 +53,7 @@ pub fn build(b: *std.Build) void {
         "shared_reverse",
         "warp_reduce",
         "atomic_counter",
+        "intrinsics_smoke",
     };
 
     // `zig build kernels`: compile every kernel in src/examples/ to

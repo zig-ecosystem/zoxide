@@ -1,5 +1,6 @@
 const std = @import("std");
 const run_cmd = @import("run.zig");
+const gen_cmd = @import("gen.zig");
 
 /// Baseline GPU: NVIDIA H20 (Hopper, compute capability 9.0).
 const default_sm = "sm_90";
@@ -33,6 +34,11 @@ pub fn main(init: std.process.Init) !u8 {
         return cmdDoctor(gpa, io, init.environ_map, args[2..]);
     } else if (std.mem.eql(u8, cmd, "run")) {
         return cmdRun(gpa, io, init.environ_map, args[2..]);
+    } else if (std.mem.eql(u8, cmd, "gen")) {
+        var buf: [8192]u8 = undefined;
+        var w = std.Io.File.stdout().writerStreaming(io, &buf);
+        defer w.interface.flush() catch {};
+        return gen_cmd.genMain(gpa, io, args[2..], &w.interface);
     } else if (std.mem.eql(u8, cmd, "help") or std.mem.eql(u8, cmd, "--help") or std.mem.eql(u8, cmd, "-h")) {
         usage();
         return 0;

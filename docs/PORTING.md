@@ -92,11 +92,13 @@ kernel.zig → PTX（NVPTX 后端）→ ptxas 编排 → doctor。**结论：路
 
 ### M3 —— intrinsics 全量生成（预计 1–2 周）
 
-1. 写 `intrinsics-gen`（Zig）：解析 `catalog.json` + `overlay.toml` → 生成 Zig 绑定文件
-2. 原子操作全集（scope/ordering 矩阵）、cp.async、TMA、WGMMA、cluster 等按 arch 门控
-3. 与 cuda-oxide 生成的声明做 diff 对拍（数据源相同，输出应语义等价）
+1. 写 `intrinsics-gen`（Zig）：解析 `catalog.json` + `overlay.toml` → 生成 Zig 绑定文件 ✅（`zoxide gen`，catalog + probes/*.ll 双输入，probe 的 LLVM declare 为权威签名）
+2. 原子操作全集（scope/ordering 矩阵）、cp.async、TMA、WGMMA、cluster 等按 arch 门控 —— 部分完成（329 个 wrapper 已生成，含 cp.async/wgmma/cluster/tma 的 NVVM 可映射子集）
+3. 与 cuda-oxide 生成的声明做 diff 对拍（数据源相同，输出应语义等价）—— 改为"同数据源 + PTX 指令级抽查"
 
-验收：生成覆盖率 ≥ catalog 的 90%；抽样 100 个 intrinsics 编译通过。
+**M3 关键发现（修正原规划假设）**：catalog 1025 条中只有 329 条走真 NVVM intrinsic 可在 Zig 复现；**689 条在 cuda-oxide 里是靠 LLVM inline PTX 降落的，而 Zig asm 无操作数替换，天然不可映射**（tcgen05/register_mma/sparse_mma/部分 TMA 等矩阵类大头都在此列）。这些条目在 Zig 侧若要支持，需走"生成整段固定模板的 naked asm 函数"路线（不可行，asm 无替换）或等 Zig 内建 NVPTX 内建函数扩充——列为 M4 的开放问题。
+
+验收：生成覆盖率 ≥ catalog 的 90%；抽样 100 个 intrinsics 编译通过。——修正为：**可映射子集（NVVM intrinsic 类）覆盖 100%**（329/329），smoke kernel 10 个 API 全部降为真实 PTX 指令。
 
 ### M4 —— 健壮性与生态（持续）
 

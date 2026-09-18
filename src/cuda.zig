@@ -9,6 +9,9 @@ pub const Idx3 = struct { x: u32, y: u32, z: u32 };
 
 pub const warp_size = 32;
 
+/// Generated NVVM intrinsic bindings (see `zoxide gen`).
+pub const gen = @import("gen/intrinsics.zig");
+
 extern fn @"llvm.nvvm.read.ptx.sreg.tid.x"() i32;
 extern fn @"llvm.nvvm.read.ptx.sreg.tid.y"() i32;
 extern fn @"llvm.nvvm.read.ptx.sreg.tid.z"() i32;

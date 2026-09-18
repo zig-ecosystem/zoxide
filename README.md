@@ -96,6 +96,35 @@ cuMemcpyDtoH_v2, cuLaunchKernel, cuCtxSynchronize, cuGetErrorString,
 cuGetErrorName. ABI notes: CUdeviceptr is u64; `_v2` are the real symbol
 names; kernelParams is an array of pointers to argument values.
 
+## Generating intrinsics bindings (`zoxide gen`)
+
+`zoxide gen <cuda-oxide/intrinsics> [-o src/gen/intrinsics.zig]` consumes
+cuda-oxide's catalog.json + probes/*.ll and emits `src/gen/intrinsics.zig`
+(committed; regenerate only when the catalog changes). probes/*.ll are the
+authoritative source for LLVM signatures (concrete `declare` lines); the
+catalog contributes family/module/name metadata. Get the data by pinning a
+cuda-oxide commit (the `intrinsics/` directory is self-contained; do not
+vendor it here — catalog.json alone is ~365k lines). Catalog provenance:
+NVIDIA PTX ISA documentation data, Apache-2.0.
+
+Current coverage: 329 wrappers in 17 groups (sreg, warp, float, async_copy,
+convert, barrier, fence, matrix, ...). Unmapped ~1387 entries:
+
+- 689 probes lower via inline PTX asm — **unmappable in Zig** (no asm
+  template substitution). These need per-family NVVM or builtin alternatives.
+- 690 catalog entries have no probe (tcgen05 233, register_mma 154,
+  sparse_mma 122, extended_minmax 52, packed_alu 30, ...; mostly Hopper/
+  Blackwell matrix/TMA features, deferred to a later milestone).
+
+Type mapping: `void`→`void`, `i1`→`bool`, `iN`→`iN`, `float/double/half`→
+`f32/f64/f16`, `ptr`→`?*anyopaque`, `ptr addrspace(1)`→`[*]addrspace(.global)
+const u8`, `ptr addrspace(3)`→`[*]addrspace(.shared) u8`, aggregates →
+generated `Agg*` extern structs. Vectors/bfloat/immarg annotations are
+currently unmapped.
+
+Generated bindings are re-exported as `cuda.gen` — e.g.
+`cuda.gen.warp.ballot_sync(mask, pred)`.
+
 ## Device-side library (`src/cuda.zig`)
 
 Freestanding (no host std); all device operations go through LLVM NVVM
@@ -172,3 +201,17 @@ loads/stores lower to `ld.shared.b32` / `st.shared.b32`. No intrinsic or
   across dead-code elimination. The kernel's PTX symbol is therefore mangled
   to `kernel_$_vectorAdd`.
 - `bundle_ubsan_rt = false` / `-fno-ubsan-rt` for the same alias reason.
+- **i1 in extern fns is not extern-compatible on nvptx**; map LLVM `i1`
+  params/returns to Zig `bool` (verified: `vote.sync.ballot` gets a proper
+  predicate register). Declaring them as `i32` crashes LLVM ("Copy one
+  register into another with a different width").
+- **`@ptrCast` cannot change pointer address spaces.** Declare kernel
+  parameters with the target address space directly (e.g.
+  `g: [*]addrspace(.global) const u8`) or use `@addrSpaceCast`.
+- **`addrspace(.shared)` variables must be container-level**; a local
+  `var x: [N]T addrspace(.shared)` is rejected.
+- Pointer address-space syntax is `[*]addrspace(.shared) u8` (qualifier
+  between `[*]` and the element type).
+- `llvm.nvvm.shfl.sync.*` in current LLVM returns plain `i32` (4 args), not
+  the legacy `{i32, i1}` pair — the generated bindings follow the probe
+  signatures from cuda-oxide's rust-llvm-23.1.
