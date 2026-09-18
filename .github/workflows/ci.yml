@@ -1,0 +1,60 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+
+      - name: Build host CLI
+        run: zig build
+
+      - name: Build example kernels (PTX)
+        run: zig build kernels
+
+      - name: Assert PTX invariants
+        run: |
+          set -euo pipefail
+          cd zig-out/kernels
+          for f in *.ptx; do
+            grep -q '\.entry' "$f" || { echo "$f: missing .entry"; exit 1; }
+            if grep -q '\$0' "$f"; then echo "$f: unsubstituted \$0 placeholder"; exit 1; fi
+          done
+          grep -q '\.shared' shared_reverse.ptx
+          grep -q 'shfl\.sync' warp_reduce.ptx
+          grep -q 'vote\.sync\.ballot' intrinsics_smoke.ptx
+          grep -q 'cp\.async\.ca\.shared\.global' intrinsics_smoke.ptx
+          # Regression guard for the real-GPU deadlock: every bar.sync must
+          # appear before any conditional branch in atomic_counter.
+          test "$(grep -c 'bar\.sync' atomic_counter.ptx)" -eq 2
+          first_bar=$(grep -n 'bar\.sync' atomic_counter.ptx | head -1 | cut -d: -f1)
+          first_branch=$(grep -nE '@%p[0-9]+ bra' atomic_counter.ptx | head -1 | cut -d: -f1)
+          [ "$first_bar" -lt "$first_branch" ] || { echo "atomic_counter: bar.sync after branch"; exit 1; }
+          echo "PTX invariants OK"
+
+      - name: Cross-compile x86_64-linux-gnu (pod runner build)
+        run: zig build -Dtarget=x86_64-linux-gnu.2.28 -Doptimize=ReleaseSmall --prefix /tmp/zoxide-gnu
+
+      - name: Cross-compile aarch64-linux-musl (static)
+        run: zig build -Dtarget=aarch64-linux-musl -Doptimize=ReleaseSmall --prefix /tmp/zoxide-musl
+
+      - name: Verify binary shapes
+        run: |
+          file /tmp/zoxide-gnu/bin/zoxide | grep -q 'dynamically linked'
+          file /tmp/zoxide-musl/bin/zoxide | grep -q 'statically linked'
+
+      - name: Downstream package integration
+        run: zig build
+        working-directory: tests/downstream
+
+      - name: doctor degrades gracefully without GPU
+        run: ./zig-out/bin/zoxide doctor

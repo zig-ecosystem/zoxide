@@ -1,0 +1,10 @@
+.{
+    .name = .zoxide_downstream_test,
+    .version = "0.0.0",
+    .minimum_zig_version = "0.16.0",
+    .fingerprint = 0x216deb15f9ea103c,
+    .dependencies = .{
+        .zoxide = .{ .path = "../.." },
+    },
+    .paths = .{ "build.zig", "build.zig.zon", "kernel.zig" },
+}

@@ -1,9 +1,48 @@
 const std = @import("std");
 
 // Target GPU baseline: NVIDIA H20 (Hopper, CC 9.0).
-const sm_model = &std.Target.nvptx.cpu.sm_90;
+pub const default_sm_model = &std.Target.nvptx.cpu.sm_90;
 
-fn addKernel(b: *std.Build, name: []const u8, source: std.Build.LazyPath) *std.Build.Step.InstallFile {
+pub const CudaOptions = struct {
+    sm: *const std.Target.Cpu.Model = default_sm_model,
+    optimize: std.builtin.OptimizeMode = .ReleaseFast,
+};
+
+/// Create the device-side `cuda` module (src/cuda.zig) targeting nvptx64.
+///
+/// `root` is a LazyPath to this package's `src/cuda.zig`: `b.path(...)` when
+/// used inside zoxide itself, or `zoxide_dep.path("src/cuda.zig")` from a
+/// downstream package. Downstream usage:
+///
+/// ```zig
+/// const zoxide = b.dependency("zoxide", .{});
+/// const cuda = @import("zoxide").addCudaModule(b, zoxide.path("src/cuda.zig"), .{});
+/// kernel.root_module.addImport("cuda", cuda);
+/// ```
+pub fn addCudaModule(b: *std.Build, root: std.Build.LazyPath, opts: CudaOptions) *std.Build.Module {
+    return b.createModule(.{
+        .root_source_file = root,
+        .target = b.resolveTargetQuery(.{
+            .cpu_arch = .nvptx64,
+            .os_tag = .cuda,
+            .cpu_model = .{ .explicit = opts.sm },
+        }),
+        .optimize = opts.optimize,
+        .strip = true,
+    });
+}
+
+/// Compile one kernel source file to PTX and install it as
+/// <prefix>/kernels/<name>.ptx. The `cuda` import is wired automatically.
+/// Works for downstream packages too: pass `dep.path("src/cuda.zig")` as
+/// cuda_root.
+pub fn addNvptxKernel(
+    b: *std.Build,
+    name: []const u8,
+    source: std.Build.LazyPath,
+    cuda_root: std.Build.LazyPath,
+    opts: CudaOptions,
+) *std.Build.Step.InstallFile {
     const kernel = b.addObject(.{
         .name = name,
         .root_module = b.createModule(.{
@@ -11,18 +50,13 @@ fn addKernel(b: *std.Build, name: []const u8, source: std.Build.LazyPath) *std.B
             .target = b.resolveTargetQuery(.{
                 .cpu_arch = .nvptx64,
                 .os_tag = .cuda,
-                .cpu_model = .{ .explicit = sm_model },
+                .cpu_model = .{ .explicit = opts.sm },
             }),
-            .optimize = .ReleaseFast,
+            .optimize = opts.optimize,
             .strip = true,
         }),
     });
-    kernel.root_module.addImport("cuda", b.createModule(.{
-        .root_source_file = b.path("src/cuda.zig"),
-        .target = kernel.root_module.resolved_target.?,
-        .optimize = .ReleaseFast,
-        .strip = true,
-    }));
+    kernel.root_module.addImport("cuda", addCudaModule(b, cuda_root, opts));
     // Zig's UBSan runtime hooks generate LLVM aliases, which the NVPTX
     // backend rejects when they target kernel functions.
     kernel.bundle_ubsan_rt = false;
@@ -48,6 +82,18 @@ pub fn build(b: *std.Build) void {
     });
     b.installArtifact(exe);
 
+    // Expose the device library for `dep.module("cuda")` consumers.
+    _ = b.addModule("cuda", .{
+        .root_source_file = b.path("src/cuda.zig"),
+        .target = b.resolveTargetQuery(.{
+            .cpu_arch = .nvptx64,
+            .os_tag = .cuda,
+            .cpu_model = .{ .explicit = default_sm_model },
+        }),
+        .optimize = .ReleaseFast,
+        .strip = true,
+    });
+
     const example_names = [_][]const u8{
         "vector_add",
         "shared_reverse",
@@ -61,10 +107,10 @@ pub fn build(b: *std.Build) void {
     const kernels_step = b.step("kernels", "Compile all kernels in src/examples/ to PTX (zig-out/kernels/)");
     for (example_names) |name| {
         const source = b.path(b.fmt("src/examples/{s}.zig", .{name}));
-        kernels_step.dependOn(&addKernel(b, name, source).step);
+        kernels_step.dependOn(&addNvptxKernel(b, name, source, b.path("src/cuda.zig"), .{}).step);
     }
 
     // `zig build kernel`: single default kernel (kept for compatibility).
     const kernel_step = b.step("kernel", "Compile src/kernel.zig to PTX (zig-out/kernels/kernel.ptx)");
-    kernel_step.dependOn(&addKernel(b, "kernel", b.path("src/kernel.zig")).step);
+    kernel_step.dependOn(&addNvptxKernel(b, "kernel", b.path("src/kernel.zig"), b.path("src/cuda.zig"), .{}).step);
 }

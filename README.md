@@ -1,10 +1,55 @@
 # zoxide
 
-A Zig-native CUDA kernel development skeleton — the first milestone of a
-Zig-native reimplementation inspired by [cuda-oxide](https://github.com/Rust-GPU/cuda-oxide)
-(a Rust CUDA compiler). Target GPU: NVIDIA H20 (Hopper,
-compute capability 9.0, `sm_90`). No GPU or CUDA toolkit is required to
-produce PTX; only `ptxas` (for cubin assembly) comes from CUDA.
+[![CI](https://github.com/zig-ecosystem/zoxide/actions/workflows/ci.yml/badge.svg)](https://github.com/zig-ecosystem/zoxide/actions/workflows/ci.yml)
+
+Zig-native CUDA kernel development: write kernels in Zig, compile to PTX with
+zig 0.16's NVPTX backend, assemble and run on NVIDIA GPUs. Inspired by
+[cuda-oxide](https://github.com/Rust-GPU/cuda-oxide) (a Rust CUDA compiler).
+Target GPU: NVIDIA H20 (Hopper, compute capability 9.0, `sm_90`).
+
+- **Zig version: 0.16.0** (pinned via `minimum_zig_version`; the std.Build and
+  Io APIs used here are 0.16-specific)
+- No GPU or CUDA toolkit needed to produce PTX; `ptxas` only for cubin
+  assembly; `zoxide run` needs an NVIDIA driver (libcuda)
+- Verification status: 4/4 example kernels PASS on an H20 pod — see
+  [docs/verification.md](docs/verification.md)
+
+## Use as a Zig package (downstream)
+
+```sh
+zig fetch --save git+https://github.com/zig-ecosystem/zoxide#v0.1.0
+```
+
+In your `build.zig`:
+
+```zig
+pub fn build(b: *std.Build) void {
+    const zoxide = b.dependency("zoxide", .{});
+    const kernel = b.addObject(.{
+        .name = "my_kernel",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/kernel.zig"),
+            .target = b.resolveTargetQuery(.{
+                .cpu_arch = .nvptx64,
+                .os_tag = .cuda,
+                .cpu_model = .{ .explicit = @import("zoxide").default_sm_model },
+            }),
+            .optimize = .ReleaseFast,
+            .strip = true,
+        }),
+    });
+    kernel.root_module.addImport("cuda",
+        @import("zoxide").addCudaModule(b, zoxide.path("src/cuda.zig"), .{}));
+    kernel.bundle_ubsan_rt = false; // NVPTX rejects UBSan aliases to kernels
+    b.getInstallStep().dependOn(
+        &b.addInstallFileWithDir(kernel.getEmittedAsm(), .{ .custom = "kernels" }, "my_kernel.ptx").step);
+}
+```
+
+Or shorter, with the all-in-one helper:
+`@import("zoxide").addNvptxKernel(b, "my_kernel", b.path("src/kernel.zig"), zoxide.path("src/cuda.zig"), .{})`.
+Your kernel code uses `const cuda = @import("cuda");` — see
+`tests/downstream/` for a complete minimal package (built in CI).
 
 ## Requirements
 
@@ -180,6 +225,13 @@ Zig 0.16 accepts this and the NVPTX backend emits a per-block
 `.shared .align 4 .b8 <mangled>[1024];` declaration inside the `.entry`;
 loads/stores lower to `ld.shared.b32` / `st.shared.b32`. No intrinsic or
 `@ptrFromInt` fallback is needed.
+
+## License
+
+MIT (see LICENSE). The intrinsics generator consumes data from cuda-oxide's
+`intrinsics/` catalog (Apache-2.0); that catalog data itself derives from
+NVIDIA's PTX ISA documentation. `src/gen/intrinsics.zig` is generated output
+— do not edit by hand.
 
 ## Notes on the kernel (`src/kernel.zig`)
 
