@@ -215,3 +215,19 @@ loads/stores lower to `ld.shared.b32` / `st.shared.b32`. No intrinsic or
 - `llvm.nvvm.shfl.sync.*` in current LLVM returns plain `i32` (4 args), not
   the legacy `{i32, i1}` pair — the generated bindings follow the probe
   signatures from cuda-oxide's rust-llvm-23.1.
+- **Conditional code around barriers can deadlock a real GPU.** Our
+  `extern fn @"llvm.nvvm.barrier0"()` declaration looks like an ordinary
+  function call to LLVM's mid-level optimizer (no convergent/noduplicate
+  attributes; NVPTX recognizes it by name only at codegen time), so passes
+  like JumpThreading may duplicate it onto divergent program points — on
+  hardware, threads that take different copies of `bar.sync` deadlock (this
+  hung `atomic_counter` on the H20 pod; same class of issue as cuda-oxide
+  disabling `-Z mir-enable-passes=-JumpThreading`). **`noinline` does NOT
+  help** (verified: LLVM then duplicates the call instruction itself, 4×
+  `call.uni` on divergent paths). Rule: never let a conditional straddle a
+  `syncThreads()` — e.g. replace `if (tid == 0) smem = 0;` with an
+  unconditional same-value write by all threads before the barrier. After
+  changing barrier-adjacent code, grep the PTX: each `syncThreads()` must
+  lower to exactly one `bar.sync 0` on the universal path. Same caution
+  applies, in theory, to `syncWarp` with a full mask; warp-collective
+  shuffles are single instructions and are not affected.

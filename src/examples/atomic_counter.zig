@@ -12,7 +12,10 @@ pub fn atomicCounter(
 ) callconv(.kernel) void {
     const tid = cuda.threadIdx().x;
 
-    if (tid == 0) block_count[0] = 0;
+    // All threads write the same value: keeps the barrier out of a
+    // conditional, so LLVM cannot duplicate the barrier call into both
+    // arms of a branch (which deadlocks a real GPU).
+    block_count[0] = 0;
     cuda.syncThreads();
 
     _ = cuda.atomicAdd(u32, global_count, 1);
