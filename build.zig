@@ -102,6 +102,7 @@ pub fn build(b: *std.Build) void {
         "intrinsics_smoke",
         "sgemm_naive",
         "sgemm_tiled",
+        "sgemm_reg",
     };
 
     // `zig build kernels`: compile every kernel in src/examples/ to

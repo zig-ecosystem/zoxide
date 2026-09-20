@@ -46,6 +46,11 @@ jobs:
           # sgemm_tiled: the tile loop must keep exactly 2 bar.sync sites
           # (one after tile load, one after the dot-product loop).
           test "$(grep -c 'bar\.sync' sgemm_tiled.ptx)" -eq 2
+          # sgemm_reg: FMA must be emitted (register-blocked inner loop) and
+          # the tile loop must keep exactly 2 bar.sync sites.
+          test "$(grep -c 'fma\.rn\.f32' sgemm_reg.ptx)" -ge 64
+          test "$(grep -c 'bar\.sync' sgemm_reg.ptx)" -eq 2
+          grep -q '\.shared' sgemm_reg.ptx
           echo "PTX invariants OK"
 
       - name: Cross-compile x86_64-linux-gnu (pod runner build)

@@ -41,8 +41,9 @@ pub fn benchMain(
     const stem = std.fs.path.stem(std.fs.path.basename(args.input));
     const tiled = std.mem.eql(u8, stem, "sgemm_tiled");
     const naive = std.mem.eql(u8, stem, "sgemm_naive");
-    if (!tiled and !naive) {
-        try out.print("error: bench supports sgemm_naive/sgemm_tiled inputs (got '{s}')\n", .{args.input});
+    const reg = std.mem.eql(u8, stem, "sgemm_reg");
+    if (!tiled and !naive and !reg) {
+        try out.print("error: bench supports sgemm_naive/sgemm_tiled/sgemm_reg inputs (got '{s}')\n", .{args.input});
         return 1;
     }
     const n = args.n;
@@ -75,7 +76,7 @@ pub fn benchMain(
     defer gpa.free(cubin);
 
     const kernel_name = args.kernel_name orelse
-        try std.fmt.allocPrint(gpa, "{s}_$_sgemm{s}", .{ stem, if (tiled) "Tiled" else "Naive" });
+        try std.fmt.allocPrint(gpa, "{s}_$_sgemm{s}", .{ stem, if (tiled) "Tiled" else if (reg) "Reg" else "Naive" });
     defer if (args.kernel_name == null) gpa.free(kernel_name);
 
     var drv = cu.Driver.load() catch |e| {
@@ -140,6 +141,7 @@ pub fn benchMain(
 
     const grid_x: u32 = @intCast((n + 31) / 32);
     const grid_y: u32 = grid_x;
+    const grid_reg: u32 = @intCast((n + 127) / 128);
     const start = try ctx.eventCreate();
     defer start.destroy();
     const stop = try ctx.eventCreate();
@@ -149,7 +151,9 @@ pub fn benchMain(
     var it: u32 = 0;
     while (it < args.iters) : (it += 1) {
         try start.record();
-        if (tiled) {
+        if (reg) {
+            try func.launch(grid_reg, grid_reg, 1, 16, 16, 1, &params);
+        } else if (tiled) {
             try func.launch(grid_x, grid_y, 1, 32, 32, 1, &params);
         } else {
             try func.launch(@intCast((elems + 255) / 256), 1, 1, 256, 1, 1, &params);

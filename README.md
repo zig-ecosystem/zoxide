@@ -177,12 +177,20 @@ SGEMM (C = A·B, square f32) harness with CUDA event timing:
 ```sh
 ./zoxide bench sgemm_naive.ptx --n 4096 --iters 10
 ./zoxide bench sgemm_tiled.ptx --n 4096 --iters 10
+./zoxide bench sgemm_reg.ptx  --n 4096 --iters 10
 ```
 
 - `sgemm_naive.zig`: one thread per C element, direct global loads (baseline).
 - `sgemm_tiled.zig`: classic 32×32 shared-memory tiles, 32×32 = 1024 threads
   per block, zero-filled boundary tiles (correct for any N), both
   `syncThreads()` on the uniform loop path.
+- `sgemm_reg.zig`: register-blocked 128×128 block tile, K-slice 8, 16×16 =
+  256 threads, each thread accumulates an 8×8 sub-block in registers;
+  inner loop uses `@mulAdd` (lowers to `fma.rn.f32` — verified in PTX);
+  branchless zero-fill loads, both barriers on the uniform path.
+
+Measured on H20 (n=4096): naive 2768 GFLOPS (6.3%), tiled 4367 GFLOPS (9.9%)
+of the ~44 TFLOPS FP32 peak.
 
 Output example:
 
