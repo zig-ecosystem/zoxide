@@ -1,6 +1,6 @@
 # Draft: ziglang/zig issue — NVPTX inline asm operand substitution / NVVM intrinsics
 
-> 状态：**草稿，待评审**。评审通过后发到 https://github.com/ziglang/zig/issues 。
+> 状态：**已撤回（前提证伪），仅存档**。评审通过后发到 https://github.com/ziglang/zig/issues 。
 > 目标读者：zig 编译器维护者。写作基调：最小复现 + 明确诉求 + 真实用例，不抱怨。
 
 ---
@@ -74,3 +74,23 @@ Zig 0.16.0, target `nvptx64-cuda`, `-mcpu sm_90`; ptxas 12.8 for validation.
 - 已按作者要求移除 zoxide 公开引用（用抽象用例描述）。
 - **发布受阻**：ziglang/zig 仓库当前限制为 collaborator 才能开 issue（gh 报 "Interactions on this repository have been restricted to collaborators only"）。
 - 备选渠道：① ziggit.dev 论坛发帖（Zig 官方论坛，维护者活跃）② Zig Discord #compiler 频道 ③ 等限制解除后再发 issue。草稿保持可用。
+
+---
+
+## ⚠️ 已撤回（WITHDRAWN）— 2026-09-20
+
+**前提被证伪，不要发这个 issue。**
+
+对照最新 zig master（codeberg，commit 3bfb299947）源码核查后发现：Zig 的 asm **支持 `%[name]` 具名操作数替换**（`src/codegen/llvm/FuncGen.zig:2812-2878` 的 rendered_template 状态机，`doc/langref/Assembly Syntax Explained.zig` 文档化）。我们此前测试失败是因为试了 `$0`/`%0`/`${0}`/`$[name]` 四种形式，唯独漏了唯一正确的 `%[name]`。
+
+本机验证（zig 0.16.0，nvptx64-cuda sm_90）：
+
+```zig
+asm ("mov.u32 \t%[r], %tid.x;" : [r] "=r" (-> u32))
+// → PTX: mov.u32 %r1, %tid.x;  ✓ 替换成功，ptxas 可接受
+```
+
+连带影响：
+- 689 条 asm 降落的 PTX 指令（tcgen05/mma/TMA）**不再被阻塞**——M4d 从"等上游"变为"生成器支持 asm 类条目"
+- Zig 上游只剩一个温和诉求：`llvm.nvvm.*` extern 调用的文档化承诺（非阻塞）
+- 另有意外收获：被删除的 test/nvptx.zig（2025-10）证明 LLVM 后端这条路上游验证过
