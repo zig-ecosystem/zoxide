@@ -152,23 +152,22 @@ cuda-oxide commit (the `intrinsics/` directory is self-contained; do not
 vendor it here — catalog.json alone is ~365k lines). Catalog provenance:
 NVIDIA PTX ISA documentation data, Apache-2.0.
 
-Current coverage: 329 wrappers in 17 groups (sreg, warp, float, async_copy,
-convert, barrier, fence, matrix, ...). Unmapped ~1387 entries:
+Current coverage: 329 intrinsic wrappers (`src/gen/intrinsics.zig`) + 618
+asm-template wrappers (`src/gen/instrinsics_asm.zig`, LLVM positional `$N`
+templates rewritten to zig named operands `%[name]`). Unmapped: 163 entries,
+mostly asm probes exceeding zig's inline-asm operand cap (max 15 outputs /
+31 inputs — tcgen05.ld and friends) plus no-probe entries (raw sreg reads,
+see cuda.zig for the common ones).
 
-- 689 probes lower via inline PTX asm — **unmappable in Zig** (no asm
-  template substitution). These need per-family NVVM or builtin alternatives.
-- 690 catalog entries have no probe (tcgen05 233, register_mma 154,
-  sparse_mma 122, extended_minmax 52, packed_alu 30, ...; mostly Hopper/
-  Blackwell matrix/TMA features, deferred to a later milestone).
+Generated bindings are re-exported as `cuda.gen` (intrinsics) and
+`cuda.asm_gen` (asm-derived) — e.g. `cuda.gen.warp.ballot_sync(mask, pred)`,
+`cuda.asm_gen.matrix.mma_m16n8k16_f32_f16(...)`.
 
 Type mapping: `void`→`void`, `i1`→`bool`, `iN`→`iN`, `float/double/half`→
 `f32/f64/f16`, `ptr`→`?*anyopaque`, `ptr addrspace(1)`→`[*]addrspace(.global)
 const u8`, `ptr addrspace(3)`→`[*]addrspace(.shared) u8`, aggregates →
 generated `Agg*` extern structs. Vectors/bfloat/immarg annotations are
 currently unmapped.
-
-Generated bindings are re-exported as `cuda.gen` — e.g.
-`cuda.gen.warp.ballot_sync(mask, pred)`.
 
 ## Benchmarking (`zoxide bench`)
 
@@ -334,15 +333,17 @@ NVIDIA's PTX ISA documentation. `src/gen/intrinsics.zig` is generated output
 
 - Freestanding vector-add kernel; reads `%tid.x` / `%ctaid.x` / `%ntid.x` to
   compute the global thread id.
-- **Do not use inline asm with `$0`/`%0` operand placeholders.** Zig emits
-  asm templates verbatim (no LLVM template substitution — this is zig-wide,
-  not NVPTX-specific), so `mov.u32 $0, %tid.x;` leaks a literal `$0` into the
-  PTX and ptxas rejects it (`Arguments mismatch for instruction 'mov'` /
-  `Unknown symbol '$0'`). Instead, call the LLVM NVVM intrinsics directly:
-  `extern fn @"llvm.nvvm.read.ptx.sreg.tid.x"() i32;` etc. They lower to
-  proper `mov.u32 %rN, %tid.x;` instructions that ptxas accepts. (The
-  `@"llvm.*"` intrinsic access is technically an accident of the compiler —
-  ziglang/zig#2291 — and may be restricted in a future release.)
+- **asm operand substitution: positional forms are NOT supported; named
+  forms are.** `$0` / `%0` / `${0}` / `$[name]` are all emitted verbatim into
+  the PTX (ptxas: "Unknown symbol '$0'"). The working form is **named
+  operands**: `asm ("mov.u32 \t%[r], %tid.x;" : [r] "=r" (-> u32))`.
+  Multi-output asm works via `[out] "=r" (var)` output clauses (max 15
+  outputs / 31 inputs — hard AstGen cap, which is what keeps tcgen05.ld out).
+  Immediate operands use the `"n"` constraint with comptime values, or
+  `std.fmt.comptimePrint` into the template. Prefer LLVM NVVM intrinsics
+  where they exist (`extern fn @"llvm.nvvm.read.ptx.sreg.tid.x"() i32`);
+  note `@"llvm.*"` access is technically an accident of the compiler
+  (ziglang/zig#2291) and may be restricted in a future release.
 - The kernel is `pub fn ... callconv(.kernel)` (not `export fn`): zig 0.16 +
   LLVM's NVPTX backend rejects `export` on kernel functions ("NVPTX aliasee
   must be a non-kernel function definition"). A dummy `export fn

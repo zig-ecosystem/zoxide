@@ -96,7 +96,7 @@ kernel.zig → PTX（NVPTX 后端）→ ptxas 编排 → doctor。**结论：路
 2. 原子操作全集（scope/ordering 矩阵）、cp.async、TMA、WGMMA、cluster 等按 arch 门控 —— 部分完成（329 个 wrapper 已生成，含 cp.async/wgmma/cluster/tma 的 NVVM 可映射子集）
 3. 与 cuda-oxide 生成的声明做 diff 对拍（数据源相同，输出应语义等价）—— 改为"同数据源 + PTX 指令级抽查"
 
-**M3 关键发现（修正原规划假设）**：catalog 1025 条中只有 329 条走真 NVVM intrinsic 可在 Zig 复现；**689 条在 cuda-oxide 里是靠 LLVM inline PTX 降落的，而 Zig asm 无操作数替换，天然不可映射**（tcgen05/register_mma/sparse_mma/部分 TMA 等矩阵类大头都在此列）。这些条目在 Zig 侧若要支持，需走"生成整段固定模板的 naked asm 函数"路线（不可行，asm 无替换）或等 Zig 内建 NVPTX 内建函数扩充——列为 M4 的开放问题。
+**M3 关键发现（v0.3.0-alpha 再次修正）**：catalog 1025 条中 329 条走真 NVVM intrinsic；689 条在 cuda-oxide 里靠 LLVM inline PTX 降落。最初误判"Zig asm 无操作数替换、不可映射"——真相是 Zig 支持 `%[name]` 具名操作数替换（位置形式 `$0`/`%0`/`${0}` 不支持）。生成器把 probe 的位置模板重写为具名形式后，asm 类已有 618 条生成（`src/gen/instrinsics_asm.zig`），含 mma.sync 多输出；剩余未映射主因是 zig asm 操作数上限（≤15 输出 / ≤31 输入，tcgen05.ld 等超宽指令受阻）。
 
 验收：生成覆盖率 ≥ catalog 的 90%；抽样 100 个 intrinsics 编译通过。——修正为：**可映射子集（NVVM intrinsic 类）覆盖 100%**（329/329），smoke kernel 10 个 API 全部降为真实 PTX 指令。
 
@@ -125,7 +125,7 @@ kernel.zig → PTX（NVPTX 后端）→ ptxas 编排 → doctor。**结论：路
 
 ## 五、已知 Zig 0.16 NVPTX 陷阱（M0 踩坑记录）
 
-1. **`asm` 模板不做操作数替换**（语言层面设计，非 bug）：`$0`/`%0`/`${0}`/具名操作数全部原样输出到 PTX，ptxas 报 "Unknown symbol '$0'"。Zig 推荐的 `{reg}` 约束在 NVPTX 不可用（无具名物理寄存器）。**解法：直接调 LLVM NVVM intrinsics**（`extern fn @"llvm.nvvm.read.ptx.sreg.tid.x"() i32` 等）——这也让设备端库路线从"inline asm 封装"升级为"NVVM intrinsic 绑定"，更类型安全；注意该能力是 ziglang/zig#2291 记录的意外暴露，未来 zig 版本可能收紧。
+1. **asm 模板的操作数替换：位置形式不支持，具名形式支持**。`$0`/`%0`/`${0}`/`$[name]` 全部原样输出到 PTX（ptxas 报 "Unknown symbol '$0'"）；正确的 Zig 形式是 **`%[name]` 具名操作数**：`asm ("mov.u32 \t%[r], %tid.x;" : [r] "=r" (-> u32))` ✓ 已验证。Zig 推荐的 `{reg}` 约束在 NVPTX 不可用（无具名物理寄存器）。设备端库优先走 **LLVM NVVM intrinsics**（`extern fn @"llvm.nvvm.read.ptx.sreg.tid.x"() i32`，类型最安全）；无 intrinsic 的指令走生成器转换的具名 asm（`src/gen/instrinsics_asm.zig`）。限制：asm 输出 ≤15 / 输入 ≤31（AstGen 硬性上限）。注意 `@"llvm.*"` 调用是 ziglang/zig#2291 记录的意外暴露，未来 zig 版本可能收紧。
 2. `export fn` + kernel callconv 会触发 LLVM alias bug（"NVPTX aliasee must be a non-kernel function definition"）。变通：`pub fn ... callconv(.kernel)` + 有函数体的 dummy export 物化 kernel 指针；PTX 中符号名带 `kernel_$_` 前缀，host 端 `cuModuleGetFunction` 需用该名。
 3. 需 `.strip = true` / `-fstrip`，否则 PTX `.target` 行带 `, debug` 后缀。
 4. `bundle_ubsan_rt = false`（UBSan runtime 同样触发 alias bug）。

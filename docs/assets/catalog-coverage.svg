@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="720" height="260" viewBox="0 0 720 260" font-family="Menlo, monospace">
+  <rect width="720" height="260" fill="#0d1117"/>
+  <text x="360" y="36" fill="#e6edf3" font-size="17" text-anchor="middle" font-weight="bold">PTX ISA catalog coverage — 947 / 1025 instructions (92%)</text>
+  <!-- stacked horizontal bar: total width 560 at x=80 -->
+  <rect x="80" y="70" width="180" height="56" fill="#56d364"/>
+  <rect x="260" y="70" width="338" height="56" fill="#79c0ff"/>
+  <rect x="598" y="70" width="42" height="56" fill="#f85149"/>
+  <text x="170" y="103" fill="#0d1117" font-size="14" text-anchor="middle" font-weight="bold">329 NVVM</text>
+  <text x="429" y="103" fill="#0d1117" font-size="14" text-anchor="middle" font-weight="bold">618 inline PTX</text>
+  <g font-size="13" fill="#8b949e">
+    <rect x="80" y="150" width="14" height="14" fill="#56d364"/><text x="102" y="162">llvm.nvvm.* intrinsics</text>
+    <rect x="290" y="150" width="14" height="14" fill="#79c0ff"/><text x="312" y="162">inline PTX via %[name] asm</text>
+    <rect x="540" y="150" width="14" height="14" fill="#f85149"/><text x="562" y="162">unmapped</text>
+  </g>
+  <text x="360" y="200" fill="#c9d1d9" font-size="13" text-anchor="middle">mma.sync / wgmma / cp.async.bulk / TMA subset — now reachable from Zig</text>
+  <text x="360" y="226" fill="#6e7681" font-size="12" text-anchor="middle">verified: named-operand substitution emits real registers, ptxas-accepted</text>
+</svg>

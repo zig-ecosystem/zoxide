@@ -1,0 +1,16 @@
+zoxide pod verification report
+timestamp (UTC): 20260920T115015Z
+binary: ./zig-out/bin/zoxide
+ptx dir: zig-out/kernels
+gpu: not detected
+ptxas: not found (PATH, $CUDA_HOME/bin, /usr/local/cuda/bin); only needed for 'zoxide cubin'
+---
+PASS  doctor  exit 0
+SKIP  run/vector_add  no GPU
+SKIP  run/shared_reverse  no GPU
+SKIP  run/warp_reduce  no GPU
+SKIP  run/atomic_counter  no GPU
+SKIP  bench/sgemm_swz  no GPU
+SKIP  cubin/intrinsics_smoke  no GPU/ptxas
+---
+totals: PASS=1 FAIL=0 SKIP=6

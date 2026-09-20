@@ -2,12 +2,17 @@
 //! Source: cuda-oxide intrinsics catalog (Apache-2.0), schema 46.
 //! Wrappers call LLVM NVVM intrinsics; freestanding nvptx64-cuda only.
 
-pub const Agg0 = extern struct { f0: i32, f1: i32, }; // { i32, i32 }
-pub const Agg1 = extern struct { f0: i32, f1: i32, f2: i32, f3: i32, }; // { i32, i32, i32, i32 }
-pub const Agg2 = extern struct { f0: i32, f1: bool, }; // { i32, i1 }
+pub const Agg0 = struct { f0: u32, f1: u32, f2: u32, f3: u32, f4: u32, f5: u32, f6: u32, f7: u32, }; // u32,u32,u32,u32,u32,u32,u32,u32,
+pub const Agg1 = struct { f0: f32, f1: f32, f2: f32, f3: f32, }; // f32,f32,f32,f32,
+pub const Agg2 = struct { f0: u32, f1: u32, f2: u32, f3: u32, }; // u32,u32,u32,u32,
+pub const Agg3 = extern struct { f0: i32, f1: i32, }; // { i32, i32 }
+pub const Agg4 = struct { f0: u32, f1: u32, }; // u32,u32,
+pub const Agg5 = extern struct { f0: i32, f1: i32, f2: i32, f3: i32, }; // { i32, i32, i32, i32 }
+pub const Agg6 = extern struct { f0: i32, f1: bool, }; // { i32, i1 }
+pub const Agg7 = struct { f0: f64, f1: f64, }; // f64,f64,
 
 /// family group: sreg
-pub const sreg = struct {
+pub const @"sreg" = struct {
     extern fn @"llvm.nvvm.read.ptx.sreg.lanemask.eq"() i32;
     /// lanemask_eq (sreg)
     pub fn @"lanemask_eq"() i32 {
@@ -171,7 +176,7 @@ pub const sreg = struct {
 };
 
 /// family group: prmt
-pub const prmt = struct {
+pub const @"prmt" = struct {
     extern fn @"llvm.nvvm.prmt"(a0: i32, a1: i32, a2: i32, ) i32;
     /// prmt (prmt)
     pub fn @"prmt"(a0: i32, a1: i32, a2: i32, ) i32 {
@@ -210,10 +215,10 @@ pub const prmt = struct {
 };
 
 /// family group: matrix
-pub const matrix = struct {
-    extern fn @"llvm.nvvm.ldmatrix.sync.aligned.m8n8.x2.trans.b16.p3"(a0: [*]addrspace(.shared) u8, ) Agg0;
+pub const @"matrix" = struct {
+    extern fn @"llvm.nvvm.ldmatrix.sync.aligned.m8n8.x2.trans.b16.p3"(a0: [*]addrspace(.shared) u8, ) Agg3;
     /// ldmatrix_m8n8_x2_trans_b16 (ldmatrix)
-    pub fn @"ldmatrix_m8n8_x2_trans_b16"(a0: [*]addrspace(.shared) u8, ) Agg0 {
+    pub fn @"ldmatrix_m8n8_x2_trans_b16"(a0: [*]addrspace(.shared) u8, ) Agg3 {
         return @"llvm.nvvm.ldmatrix.sync.aligned.m8n8.x2.trans.b16.p3"(a0, );
     }
     extern fn @"llvm.nvvm.ldmatrix.sync.aligned.m8n8.x1.b16.p3"(a0: [*]addrspace(.shared) u8, ) i32;
@@ -221,34 +226,34 @@ pub const matrix = struct {
     pub fn @"ldmatrix_m8n8_x1_b16"(a0: [*]addrspace(.shared) u8, ) i32 {
         return @"llvm.nvvm.ldmatrix.sync.aligned.m8n8.x1.b16.p3"(a0, );
     }
-    extern fn @"llvm.nvvm.ldmatrix.sync.aligned.m16n16.x2.trans.b8x16.b4x16_p64.p3"(a0: [*]addrspace(.shared) u8, ) Agg1;
+    extern fn @"llvm.nvvm.ldmatrix.sync.aligned.m16n16.x2.trans.b8x16.b4x16_p64.p3"(a0: [*]addrspace(.shared) u8, ) Agg5;
     /// ldmatrix_m16n16_x2_trans_b8x16_b4x16_p64 (ldmatrix)
-    pub fn @"ldmatrix_m16n16_x2_trans_b8x16_b4x16_p64"(a0: [*]addrspace(.shared) u8, ) Agg1 {
+    pub fn @"ldmatrix_m16n16_x2_trans_b8x16_b4x16_p64"(a0: [*]addrspace(.shared) u8, ) Agg5 {
         return @"llvm.nvvm.ldmatrix.sync.aligned.m16n16.x2.trans.b8x16.b4x16_p64.p3"(a0, );
     }
-    extern fn @"llvm.nvvm.ldmatrix.sync.aligned.m16n16.x1.trans.b8.p3"(a0: [*]addrspace(.shared) u8, ) Agg0;
+    extern fn @"llvm.nvvm.ldmatrix.sync.aligned.m16n16.x1.trans.b8.p3"(a0: [*]addrspace(.shared) u8, ) Agg3;
     /// ldmatrix_m16n16_x1_trans_b8 (ldmatrix)
-    pub fn @"ldmatrix_m16n16_x1_trans_b8"(a0: [*]addrspace(.shared) u8, ) Agg0 {
+    pub fn @"ldmatrix_m16n16_x1_trans_b8"(a0: [*]addrspace(.shared) u8, ) Agg3 {
         return @"llvm.nvvm.ldmatrix.sync.aligned.m16n16.x1.trans.b8.p3"(a0, );
     }
-    extern fn @"llvm.nvvm.ldmatrix.sync.aligned.m8n8.x4.trans.b16.p3"(a0: [*]addrspace(.shared) u8, ) Agg1;
+    extern fn @"llvm.nvvm.ldmatrix.sync.aligned.m8n8.x4.trans.b16.p3"(a0: [*]addrspace(.shared) u8, ) Agg5;
     /// ldmatrix_m8n8_x4_trans_b16 (ldmatrix)
-    pub fn @"ldmatrix_m8n8_x4_trans_b16"(a0: [*]addrspace(.shared) u8, ) Agg1 {
+    pub fn @"ldmatrix_m8n8_x4_trans_b16"(a0: [*]addrspace(.shared) u8, ) Agg5 {
         return @"llvm.nvvm.ldmatrix.sync.aligned.m8n8.x4.trans.b16.p3"(a0, );
     }
-    extern fn @"llvm.nvvm.ldmatrix.sync.aligned.m16n16.x2.trans.b8.p3"(a0: [*]addrspace(.shared) u8, ) Agg1;
+    extern fn @"llvm.nvvm.ldmatrix.sync.aligned.m16n16.x2.trans.b8.p3"(a0: [*]addrspace(.shared) u8, ) Agg5;
     /// ldmatrix_m16n16_x2_trans_b8 (ldmatrix)
-    pub fn @"ldmatrix_m16n16_x2_trans_b8"(a0: [*]addrspace(.shared) u8, ) Agg1 {
+    pub fn @"ldmatrix_m16n16_x2_trans_b8"(a0: [*]addrspace(.shared) u8, ) Agg5 {
         return @"llvm.nvvm.ldmatrix.sync.aligned.m16n16.x2.trans.b8.p3"(a0, );
     }
-    extern fn @"llvm.nvvm.ldmatrix.sync.aligned.m16n16.x2.trans.b8x16.b6x16_p32.p3"(a0: [*]addrspace(.shared) u8, ) Agg1;
+    extern fn @"llvm.nvvm.ldmatrix.sync.aligned.m16n16.x2.trans.b8x16.b6x16_p32.p3"(a0: [*]addrspace(.shared) u8, ) Agg5;
     /// ldmatrix_m16n16_x2_trans_b8x16_b6x16_p32 (ldmatrix)
-    pub fn @"ldmatrix_m16n16_x2_trans_b8x16_b6x16_p32"(a0: [*]addrspace(.shared) u8, ) Agg1 {
+    pub fn @"ldmatrix_m16n16_x2_trans_b8x16_b6x16_p32"(a0: [*]addrspace(.shared) u8, ) Agg5 {
         return @"llvm.nvvm.ldmatrix.sync.aligned.m16n16.x2.trans.b8x16.b6x16_p32.p3"(a0, );
     }
-    extern fn @"llvm.nvvm.ldmatrix.sync.aligned.m8n16.x4.b8x16.b4x16_p64.p3"(a0: [*]addrspace(.shared) u8, ) Agg1;
+    extern fn @"llvm.nvvm.ldmatrix.sync.aligned.m8n16.x4.b8x16.b4x16_p64.p3"(a0: [*]addrspace(.shared) u8, ) Agg5;
     /// ldmatrix_m8n16_x4_b8x16_b4x16_p64 (ldmatrix)
-    pub fn @"ldmatrix_m8n16_x4_b8x16_b4x16_p64"(a0: [*]addrspace(.shared) u8, ) Agg1 {
+    pub fn @"ldmatrix_m8n16_x4_b8x16_b4x16_p64"(a0: [*]addrspace(.shared) u8, ) Agg5 {
         return @"llvm.nvvm.ldmatrix.sync.aligned.m8n16.x4.b8x16.b4x16_p64.p3"(a0, );
     }
     extern fn @"llvm.nvvm.stmatrix.sync.aligned.m8n8.x4.trans.b16.p3"(a0: [*]addrspace(.shared) u8, a1: i32, a2: i32, a3: i32, a4: i32, ) void;
@@ -256,9 +261,9 @@ pub const matrix = struct {
     pub fn @"stmatrix_m8n8_x4_trans_b16"(a0: [*]addrspace(.shared) u8, a1: i32, a2: i32, a3: i32, a4: i32, ) void {
         return @"llvm.nvvm.stmatrix.sync.aligned.m8n8.x4.trans.b16.p3"(a0, a1, a2, a3, a4, );
     }
-    extern fn @"llvm.nvvm.ldmatrix.sync.aligned.m8n16.x2.b8x16.b6x16_p32.p3"(a0: [*]addrspace(.shared) u8, ) Agg0;
+    extern fn @"llvm.nvvm.ldmatrix.sync.aligned.m8n16.x2.b8x16.b6x16_p32.p3"(a0: [*]addrspace(.shared) u8, ) Agg3;
     /// ldmatrix_m8n16_x2_b8x16_b6x16_p32 (ldmatrix)
-    pub fn @"ldmatrix_m8n16_x2_b8x16_b6x16_p32"(a0: [*]addrspace(.shared) u8, ) Agg0 {
+    pub fn @"ldmatrix_m8n16_x2_b8x16_b6x16_p32"(a0: [*]addrspace(.shared) u8, ) Agg3 {
         return @"llvm.nvvm.ldmatrix.sync.aligned.m8n16.x2.b8x16.b6x16_p32.p3"(a0, );
     }
     extern fn @"llvm.nvvm.ldmatrix.sync.aligned.m8n16.x1.b8x16.b6x16_p32.p3"(a0: [*]addrspace(.shared) u8, ) i32;
@@ -271,9 +276,9 @@ pub const matrix = struct {
     pub fn @"stmatrix_m8n8_x2_b16"(a0: [*]addrspace(.shared) u8, a1: i32, a2: i32, ) void {
         return @"llvm.nvvm.stmatrix.sync.aligned.m8n8.x2.b16.p3"(a0, a1, a2, );
     }
-    extern fn @"llvm.nvvm.ldmatrix.sync.aligned.m16n16.x1.trans.b8x16.b4x16_p64.p3"(a0: [*]addrspace(.shared) u8, ) Agg0;
+    extern fn @"llvm.nvvm.ldmatrix.sync.aligned.m16n16.x1.trans.b8x16.b4x16_p64.p3"(a0: [*]addrspace(.shared) u8, ) Agg3;
     /// ldmatrix_m16n16_x1_trans_b8x16_b4x16_p64 (ldmatrix)
-    pub fn @"ldmatrix_m16n16_x1_trans_b8x16_b4x16_p64"(a0: [*]addrspace(.shared) u8, ) Agg0 {
+    pub fn @"ldmatrix_m16n16_x1_trans_b8x16_b4x16_p64"(a0: [*]addrspace(.shared) u8, ) Agg3 {
         return @"llvm.nvvm.ldmatrix.sync.aligned.m16n16.x1.trans.b8x16.b4x16_p64.p3"(a0, );
     }
     extern fn @"llvm.nvvm.stmatrix.sync.aligned.m8n8.x2.trans.b16.p3"(a0: [*]addrspace(.shared) u8, a1: i32, a2: i32, ) void;
@@ -281,9 +286,9 @@ pub const matrix = struct {
     pub fn @"stmatrix_m8n8_x2_trans_b16"(a0: [*]addrspace(.shared) u8, a1: i32, a2: i32, ) void {
         return @"llvm.nvvm.stmatrix.sync.aligned.m8n8.x2.trans.b16.p3"(a0, a1, a2, );
     }
-    extern fn @"llvm.nvvm.ldmatrix.sync.aligned.m8n8.x2.b16.p3"(a0: [*]addrspace(.shared) u8, ) Agg0;
+    extern fn @"llvm.nvvm.ldmatrix.sync.aligned.m8n8.x2.b16.p3"(a0: [*]addrspace(.shared) u8, ) Agg3;
     /// ldmatrix_m8n8_x2_b16 (ldmatrix)
-    pub fn @"ldmatrix_m8n8_x2_b16"(a0: [*]addrspace(.shared) u8, ) Agg0 {
+    pub fn @"ldmatrix_m8n8_x2_b16"(a0: [*]addrspace(.shared) u8, ) Agg3 {
         return @"llvm.nvvm.ldmatrix.sync.aligned.m8n8.x2.b16.p3"(a0, );
     }
     extern fn @"llvm.nvvm.ldmatrix.sync.aligned.m8n8.x1.trans.b16.p3"(a0: [*]addrspace(.shared) u8, ) i32;
@@ -291,9 +296,9 @@ pub const matrix = struct {
     pub fn @"ldmatrix_m8n8_x1_trans_b16"(a0: [*]addrspace(.shared) u8, ) i32 {
         return @"llvm.nvvm.ldmatrix.sync.aligned.m8n8.x1.trans.b16.p3"(a0, );
     }
-    extern fn @"llvm.nvvm.ldmatrix.sync.aligned.m16n16.x1.trans.b8x16.b6x16_p32.p3"(a0: [*]addrspace(.shared) u8, ) Agg0;
+    extern fn @"llvm.nvvm.ldmatrix.sync.aligned.m16n16.x1.trans.b8x16.b6x16_p32.p3"(a0: [*]addrspace(.shared) u8, ) Agg3;
     /// ldmatrix_m16n16_x1_trans_b8x16_b6x16_p32 (ldmatrix)
-    pub fn @"ldmatrix_m16n16_x1_trans_b8x16_b6x16_p32"(a0: [*]addrspace(.shared) u8, ) Agg0 {
+    pub fn @"ldmatrix_m16n16_x1_trans_b8x16_b6x16_p32"(a0: [*]addrspace(.shared) u8, ) Agg3 {
         return @"llvm.nvvm.ldmatrix.sync.aligned.m16n16.x1.trans.b8x16.b6x16_p32.p3"(a0, );
     }
     extern fn @"llvm.nvvm.ldmatrix.sync.aligned.m8n16.x1.b8x16.b4x16_p64.p3"(a0: [*]addrspace(.shared) u8, ) i32;
@@ -301,19 +306,19 @@ pub const matrix = struct {
     pub fn @"ldmatrix_m8n16_x1_b8x16_b4x16_p64"(a0: [*]addrspace(.shared) u8, ) i32 {
         return @"llvm.nvvm.ldmatrix.sync.aligned.m8n16.x1.b8x16.b4x16_p64.p3"(a0, );
     }
-    extern fn @"llvm.nvvm.ldmatrix.sync.aligned.m8n16.x2.b8x16.b4x16_p64.p3"(a0: [*]addrspace(.shared) u8, ) Agg0;
+    extern fn @"llvm.nvvm.ldmatrix.sync.aligned.m8n16.x2.b8x16.b4x16_p64.p3"(a0: [*]addrspace(.shared) u8, ) Agg3;
     /// ldmatrix_m8n16_x2_b8x16_b4x16_p64 (ldmatrix)
-    pub fn @"ldmatrix_m8n16_x2_b8x16_b4x16_p64"(a0: [*]addrspace(.shared) u8, ) Agg0 {
+    pub fn @"ldmatrix_m8n16_x2_b8x16_b4x16_p64"(a0: [*]addrspace(.shared) u8, ) Agg3 {
         return @"llvm.nvvm.ldmatrix.sync.aligned.m8n16.x2.b8x16.b4x16_p64.p3"(a0, );
     }
-    extern fn @"llvm.nvvm.ldmatrix.sync.aligned.m8n8.x4.b16.p3"(a0: [*]addrspace(.shared) u8, ) Agg1;
+    extern fn @"llvm.nvvm.ldmatrix.sync.aligned.m8n8.x4.b16.p3"(a0: [*]addrspace(.shared) u8, ) Agg5;
     /// ldmatrix_m8n8_x4_b16 (ldmatrix)
-    pub fn @"ldmatrix_m8n8_x4_b16"(a0: [*]addrspace(.shared) u8, ) Agg1 {
+    pub fn @"ldmatrix_m8n8_x4_b16"(a0: [*]addrspace(.shared) u8, ) Agg5 {
         return @"llvm.nvvm.ldmatrix.sync.aligned.m8n8.x4.b16.p3"(a0, );
     }
-    extern fn @"llvm.nvvm.ldmatrix.sync.aligned.m8n16.x4.b8x16.b6x16_p32.p3"(a0: [*]addrspace(.shared) u8, ) Agg1;
+    extern fn @"llvm.nvvm.ldmatrix.sync.aligned.m8n16.x4.b8x16.b6x16_p32.p3"(a0: [*]addrspace(.shared) u8, ) Agg5;
     /// ldmatrix_m8n16_x4_b8x16_b6x16_p32 (ldmatrix)
-    pub fn @"ldmatrix_m8n16_x4_b8x16_b6x16_p32"(a0: [*]addrspace(.shared) u8, ) Agg1 {
+    pub fn @"ldmatrix_m8n16_x4_b8x16_b6x16_p32"(a0: [*]addrspace(.shared) u8, ) Agg5 {
         return @"llvm.nvvm.ldmatrix.sync.aligned.m8n16.x4.b8x16.b6x16_p32.p3"(a0, );
     }
     extern fn @"llvm.nvvm.stmatrix.sync.aligned.m8n8.x4.b16.p3"(a0: [*]addrspace(.shared) u8, a1: i32, a2: i32, a3: i32, a4: i32, ) void;
@@ -324,7 +329,7 @@ pub const matrix = struct {
 };
 
 /// family group: warp
-pub const warp = struct {
+pub const @"warp" = struct {
     extern fn @"llvm.nvvm.redux.sync.umin"(a0: i32, a1: i32, ) i32;
     /// redux_sync_min_u32 (redux)
     pub fn @"redux_sync_min_u32"(a0: i32, a1: i32, ) i32 {
@@ -385,9 +390,9 @@ pub const warp = struct {
     pub fn @"redux_sync_max_f32"(a0: f32, a1: i32, ) f32 {
         return @"llvm.nvvm.redux.sync.fmax"(a0, a1, );
     }
-    extern fn @"llvm.nvvm.match.all.sync.i32p"(a0: i32, a1: i32, ) Agg2;
+    extern fn @"llvm.nvvm.match.all.sync.i32p"(a0: i32, a1: i32, ) Agg6;
     /// match_all_sync (warp_match)
-    pub fn @"match_all_sync"(a0: i32, a1: i32, ) Agg2 {
+    pub fn @"match_all_sync"(a0: i32, a1: i32, ) Agg6 {
         return @"llvm.nvvm.match.all.sync.i32p"(a0, a1, );
     }
     extern fn @"llvm.nvvm.redux.sync.fmin"(a0: f32, a1: i32, ) f32;
@@ -475,9 +480,9 @@ pub const warp = struct {
     pub fn @"ballot_sync"(a0: i32, a1: bool, ) i32 {
         return @"llvm.nvvm.vote.ballot.sync"(a0, a1, );
     }
-    extern fn @"llvm.nvvm.match.all.sync.i64p"(a0: i32, a1: i64, ) Agg2;
+    extern fn @"llvm.nvvm.match.all.sync.i64p"(a0: i32, a1: i64, ) Agg6;
     /// match_all_i64_sync (warp_match)
-    pub fn @"match_all_i64_sync"(a0: i32, a1: i64, ) Agg2 {
+    pub fn @"match_all_i64_sync"(a0: i32, a1: i64, ) Agg6 {
         return @"llvm.nvvm.match.all.sync.i64p"(a0, a1, );
     }
     extern fn @"llvm.nvvm.redux.sync.and"(a0: i32, a1: i32, ) i32;
@@ -498,7 +503,7 @@ pub const warp = struct {
 };
 
 /// family group: float
-pub const float = struct {
+pub const @"float" = struct {
     extern fn @"llvm.nvvm.mul.rp.d"(a0: f64, a1: f64, ) f64;
     /// mul_rp_f64 (scalar_arithmetic)
     pub fn @"mul_rp_f64"(a0: f64, a1: f64, ) f64 {
@@ -882,7 +887,7 @@ pub const float = struct {
 };
 
 /// family group: tma
-pub const tma = struct {
+pub const @"tma" = struct {
     extern fn @"llvm.nvvm.cp.async.bulk.tensor.reduce.dec.tile.5d"(a0: [*]addrspace(.shared) u8, a1: ?*anyopaque, a2: i32, a3: i32, a4: i32, a5: i32, a6: i32, a7: i64, a8: bool, ) void;
     /// cp_async_bulk_tensor_reduce_dec_tile_5d (tma)
     pub fn @"cp_async_bulk_tensor_reduce_dec_tile_5d"(a0: [*]addrspace(.shared) u8, a1: ?*anyopaque, a2: i32, a3: i32, a4: i32, a5: i32, a6: i32, a7: i64, a8: bool, ) void {
@@ -1321,7 +1326,7 @@ pub const tma = struct {
 };
 
 /// family group: fence
-pub const fence = struct {
+pub const @"fence" = struct {
     extern fn @"llvm.nvvm.membar.sys"() void;
     /// threadfence_system (sync)
     pub fn @"threadfence_system"() void {
@@ -1340,7 +1345,7 @@ pub const fence = struct {
 };
 
 /// family group: misc
-pub const misc = struct {
+pub const @"misc" = struct {
     extern fn @"llvm.nvvm.read.ptx.sreg.envreg1"() i32;
     /// envreg1.llvm_nvptx (misc)
     pub fn @"envreg1.llvm_nvptx"() i32 {
@@ -1376,15 +1381,15 @@ pub const misc = struct {
     pub fn @"globaltimer.llvm_nvptx"() i64 {
         return @"llvm.nvvm.read.ptx.sreg.globaltimer"();
     }
-    extern fn @"llvm.nvvm.elect.sync"(a0: i32, ) Agg2;
+    extern fn @"llvm.nvvm.elect.sync"(a0: i32, ) Agg6;
     /// elect_sync.llvm_nvptx (misc)
-    pub fn @"elect_sync.llvm_nvptx"(a0: i32, ) Agg2 {
+    pub fn @"elect_sync.llvm_nvptx"(a0: i32, ) Agg6 {
         return @"llvm.nvvm.elect.sync"(a0, );
     }
 };
 
 /// family group: async_copy
-pub const async_copy = struct {
+pub const @"async_copy" = struct {
     extern fn @"llvm.nvvm.cp.async.ca.shared.global.16"(a0: [*]addrspace(.shared) u8, a1: [*]addrspace(.global) const u8, ) void;
     /// cp_async_ca_16 (cp_async_copy)
     pub fn @"cp_async_ca_16"(a0: [*]addrspace(.shared) u8, a1: [*]addrspace(.global) const u8, ) void {
@@ -1463,7 +1468,7 @@ pub const async_copy = struct {
 };
 
 /// family group: convert
-pub const convert = struct {
+pub const @"convert" = struct {
     extern fn @"llvm.nvvm.f2tf32.rz.relu"(a0: f32, ) i32;
     /// cvt_rz_relu_tf32_f32 (scalar_conversion)
     pub fn @"cvt_rz_relu_tf32_f32"(a0: f32, ) i32 {
@@ -1537,7 +1542,7 @@ pub const convert = struct {
 };
 
 /// family group: dotprod
-pub const dotprod = struct {
+pub const @"dotprod" = struct {
     extern fn @"llvm.nvvm.idp4a.u.u"(a0: i32, a1: i32, a2: i32, ) i32;
     /// dp4a_u32 (dotprod)
     pub fn @"dp4a_u32"(a0: i32, a1: i32, a2: i32, ) i32 {
@@ -1561,7 +1566,7 @@ pub const dotprod = struct {
 };
 
 /// family group: clc
-pub const clc = struct {
+pub const @"clc" = struct {
     extern fn @"llvm.nvvm.clusterlaunchcontrol.try_cancel.async.shared"(a0: [*]addrspace(.shared) u8, a1: [*]addrspace(.shared) u8, ) void;
     /// clc_try_cancel (clc)
     pub fn @"clc_try_cancel"(a0: [*]addrspace(.shared) u8, a1: [*]addrspace(.shared) u8, ) void {
@@ -1595,7 +1600,7 @@ pub const clc = struct {
 };
 
 /// family group: grid
-pub const grid = struct {
+pub const @"grid" = struct {
     extern fn @"llvm.nvvm.griddepcontrol.wait"() void;
     /// grid_dependency_wait (grid_dependency)
     pub fn @"grid_dependency_wait"() void {
@@ -1609,7 +1614,7 @@ pub const grid = struct {
 };
 
 /// family group: barrier
-pub const barrier = struct {
+pub const @"barrier" = struct {
     extern fn @"llvm.nvvm.mbarrier.arrive.noComplete.shared"(a0: [*]addrspace(.shared) u8, a1: i32, ) i64;
     /// mbarrier_arrive_no_complete (mbarrier_basic)
     pub fn @"mbarrier_arrive_no_complete"(a0: [*]addrspace(.shared) u8, a1: i32, ) i64 {
@@ -1653,7 +1658,7 @@ pub const barrier = struct {
 };
 
 /// family group: cluster
-pub const cluster = struct {
+pub const @"cluster" = struct {
     extern fn @"llvm.nvvm.barrier.cluster.wait"() void;
     /// barrier_cluster_wait (cluster_barrier)
     pub fn @"barrier_cluster_wait"() void {
@@ -1687,7 +1692,7 @@ pub const cluster = struct {
 };
 
 /// family group: wgmma
-pub const wgmma = struct {
+pub const @"wgmma" = struct {
     extern fn @"llvm.nvvm.wgmma.commit_group.sync.aligned"() void;
     /// wgmma_commit_group (wgmma_control)
     pub fn @"wgmma_commit_group"() void {
@@ -1701,7 +1706,7 @@ pub const wgmma = struct {
 };
 
 /// family group: thread
-pub const thread = struct {
+pub const @"thread" = struct {
     extern fn @"llvm.nvvm.barrier.cta.sync.aligned.all"(a0: i32, ) void;
     /// sync_threads (sync)
     pub fn @"sync_threads"(a0: i32, ) void {

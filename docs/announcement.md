@@ -4,6 +4,14 @@
 
 ---
 
+## v0.4.0-alpha — tensor-core instructions unlocked（2026-09-20）
+
+![catalog coverage](assets/catalog-coverage.svg)
+
+M4d 前提证伪后重启：Zig asm 的 `%[name]` 具名操作数替换确认可用（此前只试了位置形式）。生成器新增 **618 条 inline-PTX wrapper**（`src/gen/instrinsics_asm.zig`），catalog 覆盖率从 32% 提到 **92%（947/1025）**——mma.sync / wgmma / TMA 子集全部可达，PTX 文本验证通过（无 `$0` 残留，真实寄存器）。上游 issue 计划撤回：只剩 `llvm.nvvm.*` 文档化一个温和诉求。剩余 163 条 unmapped 的主因是 Zig asm 的 15 输出上限（tcgen05.ld 等超宽指令）。
+
+---
+
 ## v0.3.0-alpha — verification tooling + gpu_printf（2026-09-20）
 
 ![pod-verify](assets/pod-verify.svg)
