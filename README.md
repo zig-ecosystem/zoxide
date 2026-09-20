@@ -248,6 +248,14 @@ to look for). Example: `src/examples/debug_print.zig`.
 
 ## Pod verification script
 
+Easiest path — one bundle, three commands on the pod:
+
+```sh
+curl -LO https://github.com/zig-ecosystem/zoxide/releases/download/v0.3.0-alpha/zoxide-bundle-v0.3.0-alpha-linux-x86_64.tar.gz
+tar xzf zoxide-bundle-v0.3.0-alpha-linux-x86_64.tar.gz   # ./zoxide ./kernels/ ./scripts/
+./scripts/pod-verify.sh ./zoxide ./kernels
+```
+
 `scripts/pod-verify.sh [zoxide-binary] [ptx-dir] [--quick]` runs doctor →
 run × 4 examples → sgemm_swz bench smoke → intrinsics_smoke ptxas assembly,
 printing one PASS/FAIL/SKIP line per check plus a totals summary, and writes
