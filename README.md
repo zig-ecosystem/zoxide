@@ -178,6 +178,8 @@ SGEMM (C = A·B, square f32) harness with CUDA event timing:
 ./zoxide bench sgemm_naive.ptx --n 4096 --iters 10
 ./zoxide bench sgemm_tiled.ptx --n 4096 --iters 10
 ./zoxide bench sgemm_reg.ptx  --n 4096 --iters 10
+./zoxide bench sgemm_opt.ptx  --n 4096 --iters 10
+./zoxide bench sgemm_opt2.ptx --n 4096 --iters 10
 ```
 
 - `sgemm_naive.zig`: one thread per C element, direct global loads (baseline).
@@ -188,9 +190,18 @@ SGEMM (C = A·B, square f32) harness with CUDA event timing:
   256 threads, each thread accumulates an 8×8 sub-block in registers;
   inner loop uses `@mulAdd` (lowers to `fma.rn.f32` — verified in PTX);
   branchless zero-fill loads, both barriers on the uniform path.
+- `sgemm_opt.zig`: sgemm_reg + 128-bit vectorized global→shared loads
+  (`ld.global.v2.b64`/`st.shared.v2.b64` — LLVM's NVPTX backend emits the
+  v2.b64 form rather than v4.f32) + K-slice 16 + float4 fragment loads from
+  shared. Vector path requires n % 4 == 0 (16B alignment); otherwise a
+  guarded scalar fallback handles the tail — correct for any N.
+- `sgemm_opt2.zig`: sgemm_opt + double-buffered shared tiles (prefetch next
+  K-slice into register vectors while computing the current one; 3 bar.sync
+  sites: prologue + 2 per iteration, all on uniform paths).
 
-Measured on H20 (n=4096): naive 2768 GFLOPS (6.3%), tiled 4367 GFLOPS (9.9%)
-of the ~44 TFLOPS FP32 peak.
+Measured on H20 (n=4096): naive 2768 GFLOPS (6.3%), tiled 4367 (9.9%),
+reg 15319 (34.8%) of the ~44 TFLOPS FP32 peak; reg verified at n=4000
+(non-multiple boundary) too.
 
 Output example:
 

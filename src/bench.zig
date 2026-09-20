@@ -42,10 +42,13 @@ pub fn benchMain(
     const tiled = std.mem.eql(u8, stem, "sgemm_tiled");
     const naive = std.mem.eql(u8, stem, "sgemm_naive");
     const reg = std.mem.eql(u8, stem, "sgemm_reg");
-    if (!tiled and !naive and !reg) {
-        try out.print("error: bench supports sgemm_naive/sgemm_tiled/sgemm_reg inputs (got '{s}')\n", .{args.input});
+    const opt = std.mem.eql(u8, stem, "sgemm_opt");
+    const opt2 = std.mem.eql(u8, stem, "sgemm_opt2");
+    if (!tiled and !naive and !reg and !opt and !opt2) {
+        try out.print("error: bench supports sgemm_naive/sgemm_tiled/sgemm_reg/sgemm_opt/sgemm_opt2 inputs (got '{s}')\n", .{args.input});
         return 1;
     }
+    const regblocked = reg or opt or opt2;
     const n = args.n;
 
     // Resolve input to cubin bytes (assemble via ptxas when given PTX).
@@ -76,7 +79,7 @@ pub fn benchMain(
     defer gpa.free(cubin);
 
     const kernel_name = args.kernel_name orelse
-        try std.fmt.allocPrint(gpa, "{s}_$_sgemm{s}", .{ stem, if (tiled) "Tiled" else if (reg) "Reg" else "Naive" });
+        try std.fmt.allocPrint(gpa, "{s}_$_sgemm{s}", .{ stem, if (tiled) "Tiled" else if (reg) "Reg" else if (opt) "Opt" else if (opt2) "Opt2" else "Naive" });
     defer if (args.kernel_name == null) gpa.free(kernel_name);
 
     var drv = cu.Driver.load() catch |e| {
@@ -151,7 +154,7 @@ pub fn benchMain(
     var it: u32 = 0;
     while (it < args.iters) : (it += 1) {
         try start.record();
-        if (reg) {
+        if (regblocked) {
             try func.launch(grid_reg, grid_reg, 1, 16, 16, 1, &params);
         } else if (tiled) {
             try func.launch(grid_x, grid_y, 1, 32, 32, 1, &params);

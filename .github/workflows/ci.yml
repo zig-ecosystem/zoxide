@@ -51,6 +51,15 @@ jobs:
           test "$(grep -c 'fma\.rn\.f32' sgemm_reg.ptx)" -ge 64
           test "$(grep -c 'bar\.sync' sgemm_reg.ptx)" -eq 2
           grep -q '\.shared' sgemm_reg.ptx
+          # sgemm_opt / sgemm_opt2: vectorized (128-bit) global->shared loads.
+          grep -qE 'ld\.global\.(v4|v2\.b64)' sgemm_opt.ptx
+          grep -qE 'ld\.global\.(v4|v2\.b64)' sgemm_opt2.ptx
+          grep -qE 'st\.shared\.(v4|v2\.b64)' sgemm_opt.ptx
+          test "$(grep -c 'fma\.rn\.f32' sgemm_opt.ptx)" -ge 64
+          test "$(grep -c 'fma\.rn\.f32' sgemm_opt2.ptx)" -ge 64
+          test "$(grep -c 'bar\.sync' sgemm_opt.ptx)" -eq 2
+          # opt2: prologue + 2 per tile loop iteration
+          test "$(grep -c 'bar\.sync' sgemm_opt2.ptx)" -eq 3
           echo "PTX invariants OK"
 
       - name: Cross-compile x86_64-linux-gnu (pod runner build)

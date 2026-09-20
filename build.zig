@@ -103,6 +103,8 @@ pub fn build(b: *std.Build) void {
         "sgemm_naive",
         "sgemm_tiled",
         "sgemm_reg",
+        "sgemm_opt",
+        "sgemm_opt2",
     };
 
     // `zig build kernels`: compile every kernel in src/examples/ to
