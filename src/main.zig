@@ -1,5 +1,6 @@
 const std = @import("std");
 const run_cmd = @import("run.zig");
+const bench_cmd = @import("bench.zig");
 const gen_cmd = @import("gen.zig");
 
 /// Baseline GPU: NVIDIA H20 (Hopper, compute capability 9.0).
@@ -39,6 +40,8 @@ pub fn main(init: std.process.Init) !u8 {
         var w = std.Io.File.stdout().writerStreaming(io, &buf);
         defer w.interface.flush() catch {};
         return gen_cmd.genMain(gpa, io, args[2..], &w.interface);
+    } else if (std.mem.eql(u8, cmd, "bench")) {
+        return cmdBench(gpa, io, init.environ_map, args[2..]);
     } else if (std.mem.eql(u8, cmd, "help") or std.mem.eql(u8, cmd, "--help") or std.mem.eql(u8, cmd, "-h")) {
         usage();
         return 0;
@@ -229,6 +232,50 @@ fn cmdRun(gpa: std.mem.Allocator, io: std.Io, env: *std.process.Environ.Map, arg
     const out = &w.interface;
     defer out.flush() catch {};
     return run_cmd.run(gpa, io, env, ra, assemblePtx, out);
+}
+
+fn cmdBench(gpa: std.mem.Allocator, io: std.Io, env: *std.process.Environ.Map, args: []const [:0]const u8) !u8 {
+    var ba: bench_cmd.BenchArgs = .{ .input = "" };
+    var have_input = false;
+    var i: usize = 0;
+    while (i < args.len) : (i += 1) {
+        const a = args[i];
+        if (std.mem.eql(u8, a, "--n")) {
+            i += 1;
+            if (i >= args.len) return usageErr("bench: --n requires a value");
+            ba.n = std.fmt.parseInt(usize, args[i], 10) catch return usageErr("bench: --n must be a positive integer");
+        } else if (std.mem.eql(u8, a, "--iters")) {
+            i += 1;
+            if (i >= args.len) return usageErr("bench: --iters requires a value");
+            ba.iters = std.fmt.parseInt(u32, args[i], 10) catch return usageErr("bench: --iters must be a positive integer");
+        } else if (std.mem.eql(u8, a, "--kernel")) {
+            i += 1;
+            if (i >= args.len) return usageErr("bench: --kernel requires a value");
+            ba.kernel_name = args[i];
+        } else if (std.mem.eql(u8, a, "--arch")) {
+            i += 1;
+            if (i >= args.len) return usageErr("bench: --arch requires a value");
+            if (!validateArch(args[i])) {
+                std.debug.print("error: invalid arch '{s}'; expected one of: {s}\n", .{ args[i], "sm_75 sm_80 sm_86 sm_89 sm_90 sm_100 sm_120" });
+                return 1;
+            }
+            ba.arch = args[i];
+        } else if (!have_input) {
+            ba.input = a;
+            have_input = true;
+        } else {
+            return usageErr("bench: unexpected argument");
+        }
+    }
+    if (!have_input) return usageErr("expected 'zoxide bench <sgemm_naive|sgemm_tiled>.ptx [--n N] [--iters K]'");
+    if (!fileExists(io, ba.input)) {
+        std.debug.print("error: input file not found: '{s}'\n", .{ba.input});
+        return 1;
+    }
+    var buf: [4096]u8 = undefined;
+    var w = std.Io.File.stdout().writerStreaming(io, &buf);
+    defer w.interface.flush() catch {};
+    return bench_cmd.benchMain(gpa, io, env, ba, assemblePtx, &w.interface);
 }
 
 fn usageErr(msg: []const u8) u8 {

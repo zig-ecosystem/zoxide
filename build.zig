@@ -100,6 +100,8 @@ pub fn build(b: *std.Build) void {
         "warp_reduce",
         "atomic_counter",
         "intrinsics_smoke",
+        "sgemm_naive",
+        "sgemm_tiled",
     };
 
     // `zig build kernels`: compile every kernel in src/examples/ to

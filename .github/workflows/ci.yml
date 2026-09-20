@@ -33,12 +33,19 @@ jobs:
           grep -q 'shfl\.sync' warp_reduce.ptx
           grep -q 'vote\.sync\.ballot' intrinsics_smoke.ptx
           grep -q 'cp\.async\.ca\.shared\.global' intrinsics_smoke.ptx
-          # Regression guard for the real-GPU deadlock: every bar.sync must
-          # appear before any conditional branch in atomic_counter.
+          grep -q '\.shared' sgemm_tiled.ptx
+          grep -q 'st\.shared' sgemm_tiled.ptx
+          grep -q 'ld\.shared' sgemm_tiled.ptx
+          # Regression guard for the real-GPU deadlock (docs/verification.md):
+          # atomic_counter's bar.sync must not be duplicated onto divergent
+          # paths — exactly 2 sites, both before the first conditional branch.
           test "$(grep -c 'bar\.sync' atomic_counter.ptx)" -eq 2
           first_bar=$(grep -n 'bar\.sync' atomic_counter.ptx | head -1 | cut -d: -f1)
           first_branch=$(grep -nE '@%p[0-9]+ bra' atomic_counter.ptx | head -1 | cut -d: -f1)
           [ "$first_bar" -lt "$first_branch" ] || { echo "atomic_counter: bar.sync after branch"; exit 1; }
+          # sgemm_tiled: the tile loop must keep exactly 2 bar.sync sites
+          # (one after tile load, one after the dot-product loop).
+          test "$(grep -c 'bar\.sync' sgemm_tiled.ptx)" -eq 2
           echo "PTX invariants OK"
 
       - name: Cross-compile x86_64-linux-gnu (pod runner build)

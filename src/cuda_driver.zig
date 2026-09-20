@@ -12,6 +12,7 @@ pub const CUcontext = ?*anyopaque;
 pub const CUmodule = ?*anyopaque;
 pub const CUfunction = ?*anyopaque;
 pub const CUstream = ?*anyopaque; // null = default stream
+pub const CUevent = ?*anyopaque;
 
 /// CUresult is a c_int. Common codes (authoritative names come from
 /// cuGetErrorName at runtime):
@@ -61,6 +62,11 @@ pub const Driver = struct {
         extra: ?*?*anyopaque,
     ) callconv(.c) c_int,
     cuCtxSynchronize: *const fn () callconv(.c) c_int,
+    cuEventCreate: *const fn (phEvent: *CUevent, flags: c_uint) callconv(.c) c_int,
+    cuEventRecord: *const fn (hEvent: CUevent, hStream: CUstream) callconv(.c) c_int,
+    cuEventSynchronize: *const fn (hEvent: CUevent) callconv(.c) c_int,
+    cuEventElapsedTime: *const fn (pMilliseconds: *f32, hStart: CUevent, hEnd: CUevent) callconv(.c) c_int,
+    cuEventDestroy: *const fn (hEvent: CUevent) callconv(.c) c_int,
     cuGetErrorString: *const fn (err: c_int, pStr: *?[*:0]const u8) callconv(.c) c_int,
     cuGetErrorName: *const fn (err: c_int, pStr: *?[*:0]const u8) callconv(.c) c_int,
 
@@ -175,6 +181,37 @@ pub const Context = struct {
 
     pub fn synchronize(self: *Context) Error!void {
         try self.drv.check(self.drv.cuCtxSynchronize());
+    }
+
+    pub fn eventCreate(self: *Context) Error!Event {
+        try self.drv.check(self.drv.cuCtxSetCurrent(self.ctx));
+        var ev: CUevent = null;
+        try self.drv.check(self.drv.cuEventCreate(&ev, 0)); // CU_EVENT_DEFAULT
+        return .{ .drv = self.drv, .ev = ev };
+    }
+};
+
+pub const Event = struct {
+    drv: *Driver,
+    ev: CUevent,
+
+    pub fn record(self: Event) Error!void {
+        try self.drv.check(self.drv.cuEventRecord(self.ev, null));
+    }
+
+    pub fn sync(self: Event) Error!void {
+        try self.drv.check(self.drv.cuEventSynchronize(self.ev));
+    }
+
+    /// Milliseconds between two recorded events.
+    pub fn elapsedMs(self: Event, end: Event) Error!f32 {
+        var ms: f32 = 0;
+        try self.drv.check(self.drv.cuEventElapsedTime(&ms, self.ev, end.ev));
+        return ms;
+    }
+
+    pub fn destroy(self: Event) void {
+        self.drv.check(self.drv.cuEventDestroy(self.ev)) catch {};
     }
 };
 

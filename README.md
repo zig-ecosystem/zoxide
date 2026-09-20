@@ -170,6 +170,34 @@ currently unmapped.
 Generated bindings are re-exported as `cuda.gen` — e.g.
 `cuda.gen.warp.ballot_sync(mask, pred)`.
 
+## Benchmarking (`zoxide bench`)
+
+SGEMM (C = A·B, square f32) harness with CUDA event timing:
+
+```sh
+./zoxide bench sgemm_naive.ptx --n 4096 --iters 10
+./zoxide bench sgemm_tiled.ptx --n 4096 --iters 10
+```
+
+- `sgemm_naive.zig`: one thread per C element, direct global loads (baseline).
+- `sgemm_tiled.zig`: classic 32×32 shared-memory tiles, 32×32 = 1024 threads
+  per block, zero-filled boundary tiles (correct for any N), both
+  `syncThreads()` on the uniform loop path.
+
+Output example:
+
+```
+bench: sgemm_tiled n=4096 iters=10
+best: 12.345 ms over 10 iters
+GFLOPS: 11150.0 (25.3% of H20 FP32 peak ~44000 GFLOPS)
+PASS: 256/256 samples within rel err 1e-2 (max 0.000310)
+```
+
+Timing uses cuEventRecord/cuEventElapsedTime (min over iters); verification
+checks 256 deterministic samples against an f64 CPU reference. Pod steps:
+`zig build kernels` on the dev machine, copy `zig-out/kernels/*.ptx` and the
+gnu-dynamic `zoxide` binary to the pod, run the two commands above.
+
 ## Device-side library (`src/cuda.zig`)
 
 Freestanding (no host std); all device operations go through LLVM NVVM
