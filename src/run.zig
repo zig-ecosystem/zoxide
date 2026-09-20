@@ -24,6 +24,7 @@ const examples = [_]Example{
     .{ .stem = "shared_reverse", .entry = "sharedReverse", .default_block = 256 },
     .{ .stem = "warp_reduce", .entry = "warpReduce", .default_block = 256 },
     .{ .stem = "atomic_counter", .entry = "atomicCounter", .default_block = 256 },
+    .{ .stem = "debug_print", .entry = "debugPrint", .default_block = 32 },
 };
 
 fn findExample(path: []const u8) ?Example {
@@ -120,6 +121,8 @@ pub fn run(
         try runSharedReverse(gpa, &ctx, func, args, out)
     else if (std.mem.eql(u8, ex.stem, "warp_reduce"))
         try runWarpReduce(gpa, &ctx, func, args, out)
+    else if (std.mem.eql(u8, ex.stem, "debug_print"))
+        try runDebugPrint(&ctx, func, out)
     else
         try runAtomicCounter(gpa, &ctx, func, args, out);
     return r;
@@ -301,5 +304,16 @@ fn runAtomicCounter(gpa: std.mem.Allocator, ctx: *cu.Context, func: cu.Function,
     }
     if (bad > 0) return fail(out, "atomic_counter: count={d} (want {d}), fsum={d}, hist={any}", .{ zero32, total, zero_f, hist_zeros });
     try out.print("PASS: atomic_counter count={d} fsum={d}\n", .{ zero32, zero_f });
+    return 0;
+}
+
+fn runDebugPrint(ctx: *cu.Context, func: cu.Function, out: *std.Io.Writer) !u8 {
+    var marker: u32 = 42;
+    var params = [_]?*anyopaque{&marker};
+    try func.launch(1, 1, 1, 32, 1, 1, &params);
+    try ctx.synchronize();
+    // vprintf output is flushed to host stdout during synchronization;
+    // it is not capturable programmatically, so this is fail-open.
+    try out.print("PASS(launch): debug_print ran; expect 8 lines 'debug_print: tid=N x=1.500000 marker=42' on stdout above (verified visually — device printf is not capturable)\n", .{});
     return 0;
 }

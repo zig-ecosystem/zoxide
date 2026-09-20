@@ -231,6 +231,34 @@ checks 256 deterministic samples against an f64 CPU reference. Pod steps:
 `zig build kernels` on the dev machine, copy `zig-out/kernels/*.ptx` and the
 gnu-dynamic `zoxide` binary to the pod, run the two commands above.
 
+## Device printf (`cuda.printf`)
+
+```zig
+cuda.printf("tid=%d x=%f\n", .{ tid, x });
+```
+
+ABI: LLVM removed `llvm.nvvm.vprintf`; the NVPTX backend lowers calls to a
+function literally named `vprintf`. The format string is materialized as a
+per-callsite `.global` constant; arguments are packed as 8-byte
+little-endian slots (C varargs promotion: f32 → f64). Supported arg types:
+ints (≤64-bit), f32/f64, bool. Device output reaches host stdout at the next
+`cuCtxSynchronize` and is not programmatically capturable — the
+`debug_print` harness in `zoxide run` is therefore fail-open (it prints what
+to look for). Example: `src/examples/debug_print.zig`.
+
+## Pod verification script
+
+`scripts/pod-verify.sh [zoxide-binary] [ptx-dir] [--quick]` runs doctor →
+run × 4 examples → sgemm_swz bench smoke → intrinsics_smoke ptxas assembly,
+printing one PASS/FAIL/SKIP line per check plus a totals summary, and writes
+a timestamped report (`zoxide-verify-<ts>.txt`) with GPU/driver/ptxas
+environment info. Missing PTX files are SKIP, not FAIL. With no GPU visible
+the script degrades to SKIP for run/bench/cubin and still exits 0 (this is
+what CI does). Any real FAIL → exit 1.
+
+`scripts/k8s-gpu-verify.yaml` is a kubectl-apply-able Job template wrapping
+the script (placeholder image/artifact URL — adjust for your registry).
+
 ## Device-side library (`src/cuda.zig`)
 
 Freestanding (no host std); all device operations go through LLVM NVVM

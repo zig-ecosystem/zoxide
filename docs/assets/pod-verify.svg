@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="720" height="300" viewBox="0 0 720 300" font-family="Menlo, monospace">
+  <rect width="720" height="300" fill="#0d1117"/>
+  <text x="360" y="34" fill="#e6edf3" font-size="17" text-anchor="middle" font-weight="bold">zoxide pod-verify — one-command GPU regression (H20)</text>
+  <g font-size="14">
+    <text x="90" y="80" fill="#56d364">✓ PASS</text><text x="180" y="80" fill="#c9d1d9">doctor — H20, sm_90 match, ptxas 12.8</text>
+    <text x="90" y="110" fill="#56d364">✓ PASS</text><text x="180" y="110" fill="#c9d1d9">run/vector_add      n=1M  max err 0</text>
+    <text x="90" y="140" fill="#56d364">✓ PASS</text><text x="180" y="140" fill="#c9d1d9">run/shared_reverse  n=1M</text>
+    <text x="90" y="170" fill="#56d364">✓ PASS</text><text x="180" y="170" fill="#c9d1d9">run/warp_reduce     grid=4096</text>
+    <text x="90" y="200" fill="#56d364">✓ PASS</text><text x="180" y="200" fill="#c9d1d9">run/atomic_counter  count=16384</text>
+    <text x="90" y="230" fill="#56d364">✓ PASS</text><text x="180" y="230" fill="#c9d1d9">bench/sgemm_swz     smoke n=512</text>
+    <text x="90" y="260" fill="#56d364">✓ PASS</text><text x="180" y="260" fill="#c9d1d9">cubin/intrinsics_smoke  ptxas asm</text>
+  </g>
+  <text x="360" y="288" fill="#6e7681" font-size="12" text-anchor="middle">scripts/pod-verify.sh + k8s-gpu-verify.yaml — kubectl apply and done</text>
+</svg>

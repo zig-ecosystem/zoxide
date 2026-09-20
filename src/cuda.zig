@@ -12,6 +12,62 @@ pub const warp_size = 32;
 /// Generated NVVM intrinsic bindings (see `zoxide gen`).
 pub const gen = @import("gen/intrinsics.zig");
 
+// --- printf ---
+//
+// LLVM removed the llvm.nvvm.vprintf intrinsic; the NVPTX backend instead
+// lowers calls to a function literally named `vprintf` into the PTX vprintf
+// mechanism. ABI: format is a pointer to a NUL-terminated string in .global
+// memory; valist is a byte buffer of 8-byte little-endian slots, one per
+// argument (printf varargs promotion applies: f32 is passed as f64).
+
+extern fn vprintf(fmt: ?*const anyopaque, valist: ?*const anyopaque) i32;
+
+fn packPrintfSlot(slot: *[8]u8, val: anytype) void {
+    const T = @TypeOf(val);
+    const write = struct {
+        fn u64le(s: *[8]u8, v: u64) void {
+            s.* = @bitCast(v);
+        }
+    }.u64le;
+    switch (@typeInfo(T)) {
+        .int => |t| {
+            const v: u64 = if (t.signedness == .signed)
+                @bitCast(@as(i64, val))
+            else
+                @intCast(val);
+            write(slot, v);
+        },
+        .float => |t| {
+            // C varargs promotion: all floats become double.
+            const v: u64 = if (t.bits == 64)
+                @bitCast(@as(f64, val))
+            else
+                @bitCast(@as(f64, @floatCast(val)));
+            write(slot, v);
+        },
+        .bool => write(slot, @intFromBool(val)),
+        else => @compileError("printf: unsupported arg type " ++ @typeName(T)),
+    }
+}
+
+/// Kernel-side printf: `cuda.printf("tid=%d x=%f\n", .{ tid, x });`
+/// Output is flushed to host stdout on the next cuCtxSynchronize.
+pub fn printf(comptime fmt: [:0]const u8, args: anytype) void {
+    const S = struct {
+        const fmt_g: [fmt.len:0]u8 addrspace(.global) = fmt[0..fmt.len :0].*;
+    };
+    const fields = @typeInfo(@TypeOf(args)).@"struct".fields;
+    if (fields.len == 0) {
+        _ = vprintf(@ptrCast(@addrSpaceCast(&S.fmt_g)), null);
+        return;
+    }
+    var buf: [fields.len * 8]u8 align(8) = undefined;
+    inline for (fields, 0..) |f, i| {
+        packPrintfSlot(buf[i * 8 ..][0..8], @field(args, f.name));
+    }
+    _ = vprintf(@ptrCast(@addrSpaceCast(&S.fmt_g)), &buf);
+}
+
 extern fn @"llvm.nvvm.read.ptx.sreg.tid.x"() i32;
 extern fn @"llvm.nvvm.read.ptx.sreg.tid.y"() i32;
 extern fn @"llvm.nvvm.read.ptx.sreg.tid.z"() i32;

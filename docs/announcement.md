@@ -4,6 +4,20 @@
 
 ---
 
+## v0.3.0-alpha — verification tooling + gpu_printf（2026-09-20）
+
+![pod-verify](assets/pod-verify.svg)
+
+一键 GPU 回归：`scripts/pod-verify.sh`（doctor → 4 示例 run → bench 冒烟 → ptxas 汇编，结构化报告，无 GPU 自动降级 SKIP）+ `scripts/k8s-gpu-verify.yaml`（kubectl apply 即跑的 Job 模板）。
+
+设备端 printf 落地：`cuda.printf(comptime fmt, args)`——comptime 物化 global format 串 + C varargs 提升规则的 valist 打包（f32→f64）。调查结论：`llvm.nvvm.vprintf` 在 LLVM 19+ 已移除，正确路径是调用字面名 `vprintf` 的函数，NVPTX 后端直接识别。
+
+发布文案（X 单帖）：
+
+> zoxide v0.3.0-alpha: one-command GPU regression for Zig CUDA kernels — a shell script + a k8s Job template. Plus gpu-side printf via comptime-packed varargs. github.com/zig-ecosystem/zoxide
+
+---
+
 ## v0.2.0-beta — SGEMM line complete（2026-09-20）
 
 ![SGEMM progression on H20](assets/sgemm-progression.svg)

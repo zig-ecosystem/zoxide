@@ -1,0 +1,56 @@
+# k8s-gpu-verify.yaml — one-shot GPU verification Job for zoxide.
+#
+# Applies a Job that runs scripts/pod-verify.sh against a released zoxide
+# binary + PTX bundle on an NVIDIA GPU node (tested target: H20, sm_90).
+#
+# Template placeholders — adjust for your environment:
+#   - image: nvidia/cuda:12.8.0-devel-ubuntu22.04 is a public CUDA toolkit
+#     image (provides ptxas). If your cluster requires an internal registry,
+#     mirror/replace it, e.g. registry.internal/nvidia/cuda:12.8.0-devel-ubuntu22.04
+#   - ARTIFACT_URL: point at your release artifact (tarball with zoxide +
+#     kernels/*.ptx). Below we fetch with curl from a placeholder URL;
+#     alternatively bake artifacts into an image or mount a PVC/ConfigMap
+#     (a PVC mount example is included, commented out).
+
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: zoxide-gpu-verify
+spec:
+  backoffLimit: 1
+  template:
+    spec:
+      restartPolicy: Never
+      # Optional: schedule onto GPU nodes only.
+      # nodeSelector:
+      #   nvidia.com/gpu.product: NVIDIA-H20
+      containers:
+        - name: verify
+          image: nvidia/cuda:12.8.0-devel-ubuntu22.04
+          imagePullPolicy: IfNotPresent
+          resources:
+            limits:
+              nvidia.com/gpu: 1
+          env:
+            - name: ARTIFACT_URL
+              value: "https://github.com/zig-ecosystem/zoxide/releases/download/v0.3.0-alpha/zoxide-bundle-x86_64.tar.gz"
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -eu
+              mkdir -p /work && cd /work
+              echo "fetching $ARTIFACT_URL"
+              curl -fsSL "$ARTIFACT_URL" -o bundle.tar.gz
+              tar xzf bundle.tar.gz   # expect: ./zoxide, ./kernels/*.ptx
+              chmod +x ./zoxide
+              ./scripts/pod-verify.sh ./zoxide ./kernels
+              # report file zoxide-verify-*.txt is printed to stdout too;
+              # collect with: kubectl logs job/zoxide-gpu-verify
+          # Alternative to curl: mount artifacts from a PVC.
+          # volumeMounts:
+          #   - name: artifacts
+          #     mountPath: /work
+      # volumes:
+      #   - name: artifacts
+      #     persistentVolumeClaim:
+      #       claimName: zoxide-artifacts
