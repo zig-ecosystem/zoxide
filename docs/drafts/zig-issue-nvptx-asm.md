@@ -94,3 +94,9 @@ asm ("mov.u32 \t%[r], %tid.x;" : [r] "=r" (-> u32))
 - 689 条 asm 降落的 PTX 指令（tcgen05/mma/TMA）**不再被阻塞**——M4d 从"等上游"变为"生成器支持 asm 类条目"
 - Zig 上游只剩一个温和诉求：`llvm.nvvm.*` extern 调用的文档化承诺（非阻塞）
 - 另有意外收获：被删除的 test/nvptx.zig（2025-10）证明 LLVM 后端这条路上游验证过
+
+## 社区核查补充（2026-09-20，Codeberg UI 实搜）
+
+- "asm outputs"/"too many asm"/"inline assembly limit" 搜索：**无任何关于 15 输出/31 输入上限的既有 issue**——该限制（`lib/std/zig/AstGen.zig:8628` 硬编码 `>= 16` 报错）从未被社区讨论过，是未来反馈的正当空白点。
+- 我们 M0 踩的 kernel export alias bug 是已知问题且**已在 master 修复**（codeberg #31941/#35905/#32030，对应 commit `1b7b856a81` "workaround NVPTX alias restriction on kernel exports"）。**zig 0.17 发布后，zoxide 的 `Keep()` dummy-export 变通可以移除**（kernel 可直接 `export fn ... callconv(.kernel)`）。
+- 相关活跃 issue：#35856 "Audit and fix C ABI compliance for PTX"（open）——PTX ABI 上游还在整备中。
