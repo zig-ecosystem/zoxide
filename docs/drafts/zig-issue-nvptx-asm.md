@@ -47,7 +47,7 @@ error : Unknown symbol '$0'
 
 ## Real-world impact
 
-We maintain [zoxide](https://github.com/zig-ecosystem/zoxide), a CUDA kernel toolchain writing GPU kernels in pure Zig (verified on H20 hardware: SGEMM at 43% of FP32 peak). Reusing NVIDIA's PTX ISA catalog (via [cuda-oxide](https://github.com/NVlabs/cuda-oxide), Apache-2.0), we can map **329** instructions through `llvm.nvvm.*` intrinsics — but **689 catalog entries** (the tensor-core generation: tcgen05, wgmma/register_mma/sparse_mma, most of TMA) are lowered in practice via inline PTX asm, because LLVM has no intrinsics for them. These are entirely unreachable from Zig today, which blocks FP16/BF16 tensor-core kernels on Hopper/Blackwell (the difference between ~44 TFLOPS FP32 and ~148 TFLOPS dense FP16 on an H20).
+CUDA kernels can be written in pure Zig today via the NVPTX backend (Zig → PTX → ptxas), and it works well — we have verified correctness and competitive performance (SGEMM at ~43% of FP32 peak) on Hopper hardware. Reusing NVIDIA's PTX ISA catalog data (via the Apache-2.0 [cuda-oxide](https://github.com/NVlabs/cuda-oxide) project), **329** of its 1025 instructions are reachable from Zig through `llvm.nvvm.*` intrinsic calls — but the remaining **689 entries** (the tensor-core generation: tcgen05, wgmma/register_mma/sparse_mma, most of TMA) are lowered in practice via inline PTX asm, because LLVM has no intrinsics for them. These are entirely unreachable from Zig today, which blocks FP16/BF16 tensor-core kernels on Hopper/Blackwell (the difference between ~44 TFLOPS FP32 and ~148 TFLOPS dense FP16 on an H20).
 
 ## Possible resolutions (any one unblocks us)
 
@@ -65,6 +65,12 @@ Zig 0.16.0, target `nvptx64-cuda`, `-mcpu sm_90`; ptxas 12.8 for validation.
 
 ## 评审备注（不随 issue 发出）
 
-- 附 zoxide 链接时用 v0.2.0-beta 之后的 tag，SGEMM 数据更有说服力。
+- ~~附 zoxide 链接~~ 应作者要求不引用 zoxide，用抽象描述（"CUDA kernels in pure Zig, verified on Hopper hardware"）。
 - 如果维护者倾向 option 3，我们可以跟进提供常用 builtin 清单（catalog 的 family 分布直接可给）。
 - 发出后在 ROADMAP.md v0.4.0 节更新 issue 链接。
+
+## 状态更新（2026-09-20）
+
+- 已按作者要求移除 zoxide 公开引用（用抽象用例描述）。
+- **发布受阻**：ziglang/zig 仓库当前限制为 collaborator 才能开 issue（gh 报 "Interactions on this repository have been restricted to collaborators only"）。
+- 备选渠道：① ziggit.dev 论坛发帖（Zig 官方论坛，维护者活跃）② Zig Discord #compiler 频道 ③ 等限制解除后再发 issue。草稿保持可用。
