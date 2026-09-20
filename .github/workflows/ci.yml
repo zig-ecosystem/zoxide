@@ -60,6 +60,10 @@ jobs:
           test "$(grep -c 'bar\.sync' sgemm_opt.ptx)" -eq 2
           # opt2: prologue + 2 per tile loop iteration
           test "$(grep -c 'bar\.sync' sgemm_opt2.ptx)" -eq 3
+          # sgemm_swz: conflict-free B fragments via two float4 chunks.
+          grep -qE 'ld\.shared\.v4' sgemm_swz.ptx
+          test "$(grep -c 'fma\.rn\.f32' sgemm_swz.ptx)" -ge 64
+          test "$(grep -c 'bar\.sync' sgemm_swz.ptx)" -eq 2
           echo "PTX invariants OK"
 
       - name: Cross-compile x86_64-linux-gnu (pod runner build)

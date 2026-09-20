@@ -180,6 +180,7 @@ SGEMM (C = A·B, square f32) harness with CUDA event timing:
 ./zoxide bench sgemm_reg.ptx  --n 4096 --iters 10
 ./zoxide bench sgemm_opt.ptx  --n 4096 --iters 10
 ./zoxide bench sgemm_opt2.ptx --n 4096 --iters 10
+./zoxide bench sgemm_swz.ptx  --n 4096 --iters 10
 ```
 
 - `sgemm_naive.zig`: one thread per C element, direct global loads (baseline).
@@ -198,10 +199,23 @@ SGEMM (C = A·B, square f32) harness with CUDA event timing:
 - `sgemm_opt2.zig`: sgemm_opt + double-buffered shared tiles (prefetch next
   K-slice into register vectors while computing the current one; 3 bar.sync
   sites: prologue + 2 per iteration, all on uniform paths).
+- `sgemm_swz.zig`: sgemm_opt + bank-conflict-free B fragment reads. The
+  conflict was intra-row (16 threads reading stride-8 chunks of one shared
+  row hit only 4 banks → 4-way), which a row-keyed XOR swizzle cannot fix;
+  instead each thread's 8 columns are remapped to two float4 chunks at
+  `tx*4` and `64+tx*4`, making every v4 phase cover all 32 banks. A-fragment
+  reads were already broadcast (conflict-free).
 
 Measured on H20 (n=4096): naive 2768 GFLOPS (6.3%), tiled 4367 (9.9%),
 reg 15319 (34.8%) of the ~44 TFLOPS FP32 peak; reg verified at n=4000
 (non-multiple boundary) too.
+
+If the pod has Nsight Compute, profile with:
+
+```sh
+ncu --set full ./zoxide bench sgemm_swz.ptx --n 4096 --iters 1
+# check: l1tex__data_bank_conflicts_pipe_lsu_mem_shared_op_ld
+```
 
 Output example:
 

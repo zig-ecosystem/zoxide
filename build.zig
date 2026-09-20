@@ -105,6 +105,7 @@ pub fn build(b: *std.Build) void {
         "sgemm_reg",
         "sgemm_opt",
         "sgemm_opt2",
+        "sgemm_swz",
     };
 
     // `zig build kernels`: compile every kernel in src/examples/ to
