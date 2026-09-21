@@ -182,7 +182,8 @@ SGEMM (C = A·B, square f32) harness with CUDA event timing:
 ./zoxide bench sgemm_swz.ptx  --n 4096 --iters 10
 ./zoxide bench hgemm_mma.ptx  --n 4096 --iters 10   # fp16 tensor core (mma.sync m16n8k16)
 ./zoxide bench hgemm_mma2.ptx --n 4096 --iters 10   # + ldmatrix, 128x128 tile, cp.async double buffer
-./zoxide bench hgemm_wgmma.ptx --n 4096 --iters 10 --arch sm_90a   # warpgroup MMA (wgmma.mma_async)
+./zoxide bench hgemm_wgmma.ptx  --n 4096 --iters 10 --arch sm_90a   # warpgroup MMA (wgmma.mma_async)
+./zoxide bench hgemm_wgmma2.ptx --n 4096 --iters 10 --arch sm_90a   # + 3-stage pipeline
 ```
 
 - `sgemm_naive.zig`: one thread per C element, direct global loads (baseline).
@@ -226,8 +227,8 @@ reg 15319 (34.8%) of the ~44 TFLOPS FP32 peak; reg verified at n=4000
   Measured on H20: 53.8 TFLOPS (36.4% of FP16 tensor peak), exact results.
 ![HGEMM progression on H20](docs/assets/hgemm-progression.svg)
 
-- `hgemm_wgmma.zig`: Hopper warpgroup MMA. **80.3 TFLOPS (54.3% of FP16
-  tensor peak) on H20, exact results** — 1.49x over `hgemm_mma2`. One
+- `hgemm_wgmma.zig`: Hopper warpgroup MMA. 80.3 TFLOPS (54.3% of FP16 tensor
+  peak) on H20, exact results — 1.49x over `hgemm_mma2`. One
   warpgroup (128 threads) per block, 64x128 block tile, K-slice 16, cp.async
   double buffering, both operands read asynchronously from shared memory via
   64-bit matrix descriptors. Requires `sm_90a` and n % 128 == 0.
@@ -250,6 +251,29 @@ reg 15319 (34.8%) of the ~44 TFLOPS FP32 peak; reg verified at n=4000
   kernel therefore tiles n16 eight times to cover N=128, re-reading the A
   tile from shared memory 8x per K-stage instead of once. The 54.3% above is
   achieved *with* that handicap; see `docs/upstream-asm-output-limit.md`.
+- `hgemm_wgmma2.zig`: same shape, 3-stage pipeline. **86.3 TFLOPS (58.3% of
+  FP16 tensor peak), exact results** — 1.60x over `hgemm_mma2`.
+
+  `hgemm_wgmma` ended every K-stage with `wgmma.wait_group 0`, draining the
+  tensor core. With two buffers it had no choice: the buffer about to be
+  refilled is the one the previous stage's wgmma is still reading, and wgmma
+  reads shared memory *asynchronously*. A third buffer breaks that — stage
+  `kt` computes out of buffer `kt % 3`, `wgmma.wait_group 1` retires stage
+  `kt-1` while `kt` stays in flight, and the slot that frees is
+  `(kt-1) % 3 == (kt+2) % 3`, exactly the one stage `kt+2` wants.
+
+  Worth 4.0pp, which settles a question rather than just adding speed: the
+  remaining 41.7pp is *not* the pipeline. Two candidates are left and
+  spec-sheet arithmetic cannot separate them — the n16 shape costs 3.3x the
+  shared-memory operand traffic per flop (12.8 vs 42.7 flops/byte), while
+  global traffic is 3.22 GB per pass, or 2.02 TB/s against H20's ~4 TB/s HBM.
+  Deciding between them wants a profiler, not more arithmetic; see
+  `docs/verification/`.
+
+  No swizzle, deliberately: the descriptor swizzle modes keep accesses
+  conflict-free when a tile retains a wide row pitch, but these tiles are
+  core-matrix packed, and 128 contiguous bytes against 32 banks x 4 B already
+  sweeps every bank exactly once.
 
 If the pod has Nsight Compute, profile with:
 
@@ -292,7 +316,7 @@ to look for). Example: `src/examples/debug_print.zig`.
 Easiest path — one bundle, three commands on the pod:
 
 ```sh
-curl -LO https://github.com/zig-ecosystem/zoxide/releases/download/v0.0.7-alpha/zoxide-linux-x64.tar.gz
+curl -LO https://github.com/zig-ecosystem/zoxide/releases/download/v0.0.8-alpha/zoxide-linux-x64.tar.gz
 tar xzf zoxide-linux-x64.tar.gz   # ./zoxide ./kernels/ ./scripts/
 ./scripts/pod-verify.sh ./zoxide ./kernels
 ```

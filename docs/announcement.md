@@ -4,6 +4,24 @@
 
 ---
 
+## v0.0.8-alpha — 3-stage wgmma pipeline, 58.3% of FP16 peak（2026-09-21）
+
+![hgemm progression](assets/hgemm-progression.svg)
+
+**86.3 TFLOPS（FP16 峰值 58.3%），结果精确，对 mma.sync 基线累计 1.60x。**
+
+改动只有流水线深度，shape 一字未动，所以这是一次干净的 A/B。v3 每个 K 段以 `wgmma.wait_group 0` 收尾，把 tensor core 排空——两个 buffer 下没得选：即将被重填的那个正是上一段 wgmma 还在**异步**读的。三个 buffer 破掉这个依赖，`wait_group 1` 退休 `kt-1` 而 `kt` 继续飞，空出的 `(kt-1)%3` 恰好就是 `(kt+2)%3`。
+
+值 4.0pp。但这一步真正的价值是**排除了一个候选**：剩下的 41.7pp 不是流水线。还剩两个，而且规格书算不出谁是主因——n16 让共享内存操作数流量变成 3.3 倍（12.8 vs 42.7 flops/字节），全局流量 3.22 GB/趟 = 2.02 TB/s，占 HBM 标称的 51%。所以下一步是 profiler，不是继续拍脑袋，也不是先去打编译器补丁。
+
+顺带撤销一项：上一轮列的共享内存 swizzle 经分析对我们无效——tile 已是 core-matrix packed，一个 core matrix 是 128 字节连续，共享内存 32 banks × 4B = 128 字节一轮，单次读取已完整跨遍所有 bank，没有冲突可消。swizzle 模式针对的是保持宽行距的布局（TMA 产出那种）。
+
+发布文案（X 单帖）：
+
+> Zig on Hopper: 86.3 TFLOPS HGEMM, 58.3% of H20 FP16 tensor peak, exact — 1.60x over a tuned mma.sync kernel. The win this round was letting wgmma stay async: a third buffer so wait_group 1 retires the previous stage instead of draining the tensor core. github.com/zig-ecosystem/zoxide
+
+---
+
 ## v0.0.7-alpha — warpgroup MMA, 54.3% of FP16 peak（2026-09-21）
 
 ![hgemm progression](assets/hgemm-progression.svg)

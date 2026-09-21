@@ -14,6 +14,7 @@
 | v0.0.4-alpha | asm 类 intrinsics 生成：618 条 inline-PTX wrapper，catalog 覆盖 92% |
 | v0.0.6-alpha | FP16 tensor core（mma.sync）：hgemm_mma2 53.8 TF / 36.4% 峰值，结果精确 |
 | v0.0.7-alpha | Hopper warpgroup MMA：hgemm_wgmma 80.3 TF / 54.3% 峰值，结果精确，1.49x |
+| v0.0.8-alpha | wgmma 三级流水：hgemm_wgmma2 86.3 TF / 58.3% 峰值，结果精确，累计 1.60x |
 
 ## 规划
 
@@ -35,11 +36,24 @@
 - [x] **真机验证**：fp16 mma kernel 在 H20 上跑通，结果精确（hgemm_mma 36.8 TF → hgemm_mma2 53.8 TF → hgemm_wgmma 80.3 TF / 54.3% FP16 峰值）
 - [ ] tcgen05 等超宽指令（>15 输出）的替代路线——**已确认 15 输出上限也卡住 wgmma 宽 N 形态**（`m64n32k16` 需 16 个累加器寄存器，正好超 1 个），且无法靠拆调用绕开：一条 wgmma 的累加器必须在同一操作数列表。上游补丁建议（`>= 16` → `> 32`，ZIR 侧无需改动）见 `docs/upstream-asm-output-limit.md`
 
-### v0.0.8 — 量化 15 输出上限的代价 / wgmma 流水深化
-- [ ] 打补丁的 zig（output 上限 32）编 `m64n64k16` 版 hgemm，测出上限到底值多少性能
+### v0.0.8 — wgmma 流水深化 ✅
+- [x] 三级缓冲 + `wait_group 1`：wgmma 与下一段 cp.async 重叠，58.3% 峰值（+4.0pp）
+- [x] ~~共享内存 swizzle~~ —— **撤销，经分析无效**：tile 已是 core-matrix packed，一个 core matrix
+  是 128 字节连续，共享内存 32 banks × 4B = 128 字节一轮，单次读取已完整跨遍所有 bank，
+  无冲突可消。swizzle 模式针对的是保持宽行距的布局（TMA 产出那种）
+
+### v0.0.9 — 定位剩余 41.7pp（先测量，再优化）
+流水线已排除（只值 4pp）。剩下两个候选无法用规格书算出谁是主因：
+- n16 的 shape 代价：共享内存操作数流量 3.3 倍（12.8 vs 42.7 flops/字节）
+- 全局流量：3.22 GB/趟 = 2.02 TB/s，占 HBM 标称 ~4 TB/s 的 51%
+
+- [ ] **ncu profile 分流**（最便宜且决定性）：`sm__pipe_tensor_op_hmma_cycles_active`
+  高但吞吐上不去 → 瓶颈在喂数据（指向 n16）；`gpu__dram_throughput` 接近饱和 → 先降流量
+- [ ] M=128 / 双 warpgroup（全局流量 3.22 GB → 约 2 GB）。不依赖上游，且同样能分流：
+  大涨说明受制于流量，微涨说明 n16 是墙
+- [ ] 打补丁的 zig（output 上限 32）编 `m64n64k16`，测出上限到底值多少性能
 - [ ] 上游提交（ziglang/zig issue 创建受限于 collaborator，走 `docs/drafts/` 里记录的 fallback 渠道）
-- [ ] 三级缓冲：当前每段 `wait_group 0` 排空后才复用 buffer，wgmma 与下一段 cp.async 没有重叠
-- [ ] 共享内存 swizzle（当前 `Swizzle.none`）与 TMA 替代 cp.async
+- [ ] TMA 替代 cp.async
 
 ### v0.0.5 — 类型化启动与单文件体验
 
