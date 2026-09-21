@@ -63,7 +63,9 @@ if [ "$DEGRADED" = 1 ]; then
     done
     if have_ptx wgmma_smoke; then record SKIP "run/wgmma_smoke" "no GPU"; else record SKIP "run/wgmma_smoke" "PTX missing"; fi
     if have_ptx sgemm_swz; then record SKIP "bench/sgemm_swz" "no GPU"; else record SKIP "bench/sgemm_swz" "PTX missing"; fi
-    if have_ptx hgemm_wgmma; then record SKIP "bench/hgemm_wgmma" "no GPU"; else record SKIP "bench/hgemm_wgmma" "PTX missing"; fi
+    for k in hgemm_wgmma hgemm_wgmma2; do
+        if have_ptx "$k"; then record SKIP "bench/$k" "no GPU"; else record SKIP "bench/$k" "PTX missing"; fi
+    done
     if have_ptx intrinsics_smoke; then record SKIP "cubin/intrinsics_smoke" "no GPU/ptxas"; else record SKIP "cubin/intrinsics_smoke" "PTX missing"; fi
 else
 # 2. functional examples
@@ -113,17 +115,21 @@ fi
 # 3b. hgemm_wgmma bench (correctness + TFLOPS). Same sm_90a caveat.
 if [ "$QUICK" = 1 ]; then
     record SKIP "bench/hgemm_wgmma" "--quick"
-elif have_ptx hgemm_wgmma; then
-    out=$("$ZOXIDE" bench "$PTXDIR/hgemm_wgmma.ptx" --n 4096 --iters 5 --arch sm_90a 2>&1)
-    if echo "$out" | grep -q '^PASS'; then
-        record PASS "bench/hgemm_wgmma" "$(echo "$out" | grep -m1 'GFLOPS')"
-    elif echo "$out" | grep -qi 'failed to assemble\|not supported\|invalid arch'; then
-        record SKIP "bench/hgemm_wgmma" "sm_90a unavailable: $(echo "$out" | tail -1)"
-    else
-        record FAIL "bench/hgemm_wgmma" "$(echo "$out" | tail -1)"
-    fi
 else
-    record SKIP "bench/hgemm_wgmma" "PTX missing"
+    for k in hgemm_wgmma hgemm_wgmma2; do
+        if ! have_ptx "$k"; then
+            record SKIP "bench/$k" "PTX missing"
+            continue
+        fi
+        out=$("$ZOXIDE" bench "$PTXDIR/$k.ptx" --n 4096 --iters 5 --arch sm_90a 2>&1)
+        if echo "$out" | grep -q '^PASS'; then
+            record PASS "bench/$k" "$(echo "$out" | grep -m1 'GFLOPS')"
+        elif echo "$out" | grep -qi 'failed to assemble\|not supported\|invalid arch'; then
+            record SKIP "bench/$k" "sm_90a unavailable: $(echo "$out" | tail -1)"
+        else
+            record FAIL "bench/$k" "$(echo "$out" | tail -1)"
+        fi
+    done
 fi
 
 # 4. intrinsics_smoke assembles via ptxas (run inside `run` path is not

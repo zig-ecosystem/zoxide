@@ -1,8 +1,16 @@
 //! Device-side CUDA library for zoxide kernels.
 //!
-//! Freestanding: no host std dependencies; only LLVM NVVM intrinsics and Zig
-//! builtins. Zig emits asm templates verbatim (no operand substitution), so
-//! inline asm is unusable on nvptx — everything here goes through intrinsics.
+//! Freestanding: no host std dependencies; only LLVM NVVM intrinsics, Zig
+//! builtins and inline PTX.
+//!
+//! Preference order for reaching an instruction: an `llvm.nvvm.*` intrinsic
+//! when one exists (best typed, see `gen`), otherwise inline asm with
+//! `%[name]` named operands (`asm_gen`, `wgmma`). Note that Zig supports only
+//! the named operand form on nvptx — the positional spellings (`$0`, `%0`,
+//! `${0}`) are emitted verbatim and rejected by ptxas. An earlier revision of
+//! this comment claimed operand substitution did not work at all and that
+//! inline asm was therefore unusable here; that was wrong, and the tensor-core
+//! kernels are built on it.
 
 /// 3-component index for threadIdx / blockIdx / blockDim / gridDim.
 pub const Idx3 = struct { x: u32, y: u32, z: u32 };

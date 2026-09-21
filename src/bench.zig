@@ -48,11 +48,13 @@ pub fn benchMain(
     const hgemm1 = std.mem.eql(u8, stem, "hgemm_mma");
     const hgemm2 = std.mem.eql(u8, stem, "hgemm_mma2");
     const hgemm3 = std.mem.eql(u8, stem, "hgemm_wgmma");
-    const hgemm = hgemm1 or hgemm2 or hgemm3;
+    const hgemm4 = std.mem.eql(u8, stem, "hgemm_wgmma2");
+    const wgmma = hgemm3 or hgemm4;
+    const hgemm = hgemm1 or hgemm2 or wgmma;
     // Block tile (m, n). hgemm_wgmma uses one warpgroup over a 64x128 tile;
     // the mma.sync kernels use square tiles.
-    const hgemm_tile_m: usize = if (hgemm3) 64 else if (hgemm2) 128 else 64;
-    const hgemm_tile_n: usize = if (hgemm3) 128 else hgemm_tile_m;
+    const hgemm_tile_m: usize = if (wgmma) 64 else if (hgemm2) 128 else 64;
+    const hgemm_tile_n: usize = if (wgmma) 128 else hgemm_tile_m;
     if (!tiled and !naive and !reg and !opt and !opt2 and !swz and !hgemm) {
         try out.print("error: bench supports sgemm_*, hgemm_mma* or hgemm_wgmma inputs (got '{s}')\n", .{args.input});
         return 1;
@@ -63,8 +65,8 @@ pub fn benchMain(
         return 1;
     }
     // hgemm_wgmma tiles N by 128 and has no bounds guard in the epilogue.
-    if (hgemm3 and args.n % 128 != 0) {
-        try out.print("error: hgemm_wgmma requires n % 128 == 0 (got {d})\n", .{args.n});
+    if (wgmma and args.n % 128 != 0) {
+        try out.print("error: hgemm_wgmma* requires n % 128 == 0 (got {d})\n", .{args.n});
         return 1;
     }
     const n = args.n;
@@ -96,7 +98,9 @@ pub fn benchMain(
     };
     defer gpa.free(cubin);
 
-    const kernel_name = args.kernel_name orelse if (hgemm3)
+    const kernel_name = args.kernel_name orelse if (hgemm4)
+        try std.fmt.allocPrint(gpa, "{s}_$_hgemmWgmma2", .{stem})
+    else if (hgemm3)
         try std.fmt.allocPrint(gpa, "{s}_$_hgemmWgmma", .{stem})
     else if (hgemm2)
         try std.fmt.allocPrint(gpa, "{s}_$_hgemmMma2", .{stem})

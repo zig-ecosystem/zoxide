@@ -119,6 +119,7 @@ pub fn build(b: *std.Build) void {
         .{ .name = "hgemm_mma2" },
         .{ .name = "wgmma_smoke", .sm = sm_90a_model },
         .{ .name = "hgemm_wgmma", .sm = sm_90a_model },
+        .{ .name = "hgemm_wgmma2", .sm = sm_90a_model },
     };
 
     // `zig build kernels`: compile every kernel in src/examples/ to
