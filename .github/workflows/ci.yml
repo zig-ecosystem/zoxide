@@ -75,6 +75,10 @@ jobs:
           grep -q 'prmt\.b32\.b4e' asm_smoke.ptx
           grep -q 'mma\.sync\.aligned\.m16n8k16' asm_smoke.ptx
           if grep -qE '\$[0-9]|%\[' asm_smoke.ptx; then echo "asm_smoke: unsubstituted operand"; exit 1; fi
+          # hgemm_mma: real tensor-core mma instructions, no placeholder residue
+          test "$(grep -c 'mma\.sync\.aligned\.m16n8k16' hgemm_mma.ptx)" -eq 8
+          if grep -qE '\$[0-9]|%\[' hgemm_mma.ptx; then echo "hgemm_mma: unsubstituted operand"; exit 1; fi
+          test "$(grep -c 'bar\.sync' hgemm_mma.ptx)" -eq 2
           echo "PTX invariants OK"
 
       - name: pod-verify degraded mode (no GPU runner)

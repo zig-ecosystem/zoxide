@@ -180,6 +180,7 @@ SGEMM (C = A·B, square f32) harness with CUDA event timing:
 ./zoxide bench sgemm_opt.ptx  --n 4096 --iters 10
 ./zoxide bench sgemm_opt2.ptx --n 4096 --iters 10
 ./zoxide bench sgemm_swz.ptx  --n 4096 --iters 10
+./zoxide bench hgemm_mma.ptx  --n 4096 --iters 10   # fp16 tensor core (mma.sync m16n8k16)
 ```
 
 - `sgemm_naive.zig`: one thread per C element, direct global loads (baseline).
@@ -208,6 +209,14 @@ SGEMM (C = A·B, square f32) harness with CUDA event timing:
 Measured on H20 (n=4096): naive 2768 GFLOPS (6.3%), tiled 4367 (9.9%),
 reg 15319 (34.8%) of the ~44 TFLOPS FP32 peak; reg verified at n=4000
 (non-multiple boundary) too.
+
+- `hgemm_mma.zig`: fp16 HGEMM on tensor cores via the generated
+  `cuda.asm_gen` wrapper for `mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32`.
+  Block tile 64x64, 4 warps (2x2), each warp a 2x4 grid of mma tiles (16x8),
+  K-slice 16, f32 accumulators. Requires N % 16 == 0 (bench enforces).
+  Fragment mapping follows the PTX ISA doc (derived in the kernel comments);
+  B is stored transposed in shared so b-fragment pairs load as one u32.
+  Reported against the ~148 TFLOPS FP16 tensor peak.
 
 If the pod has Nsight Compute, profile with:
 

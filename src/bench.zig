@@ -45,11 +45,16 @@ pub fn benchMain(
     const opt = std.mem.eql(u8, stem, "sgemm_opt");
     const opt2 = std.mem.eql(u8, stem, "sgemm_opt2");
     const swz = std.mem.eql(u8, stem, "sgemm_swz");
-    if (!tiled and !naive and !reg and !opt and !opt2 and !swz) {
-        try out.print("error: bench supports sgemm_naive/sgemm_tiled/sgemm_reg/sgemm_opt/sgemm_opt2/sgemm_swz inputs (got '{s}')\n", .{args.input});
+    const hgemm = std.mem.eql(u8, stem, "hgemm_mma");
+    if (!tiled and !naive and !reg and !opt and !opt2 and !swz and !hgemm) {
+        try out.print("error: bench supports sgemm_* or hgemm_mma inputs (got '{s}')\n", .{args.input});
         return 1;
     }
     const regblocked = reg or opt or opt2 or swz;
+    if (hgemm and args.n % 16 != 0) {
+        try out.print("error: hgemm_mma requires n % 16 == 0 (got {d})\n", .{args.n});
+        return 1;
+    }
     const n = args.n;
 
     // Resolve input to cubin bytes (assemble via ptxas when given PTX).
@@ -79,7 +84,9 @@ pub fn benchMain(
     };
     defer gpa.free(cubin);
 
-    const kernel_name = args.kernel_name orelse
+    const kernel_name = args.kernel_name orelse if (hgemm)
+        try std.fmt.allocPrint(gpa, "{s}_$_hgemmMma", .{stem})
+    else
         try std.fmt.allocPrint(gpa, "{s}_$_sgemm{s}", .{ stem, if (tiled) "Tiled" else if (reg) "Reg" else if (opt) "Opt" else if (opt2) "Opt2" else if (swz) "Swz" else "Naive" });
     defer if (args.kernel_name == null) gpa.free(kernel_name);
 
@@ -113,6 +120,10 @@ pub fn benchMain(
         try out.print("error: kernel '{s}' not found: {s}\n", .{ kernel_name, drv.lastError() });
         return 1;
     };
+
+    if (hgemm) {
+        return runHgemm(gpa, &ctx, func, n, args.iters, out);
+    }
 
     // Host buffers.
     const elems = n * n;
@@ -173,9 +184,13 @@ pub fn benchMain(
     try out.print("bench: {s} n={d} iters={d}\n", .{ stem, n, args.iters });
     try out.print("best: {d:.3} ms over {d} iters\n", .{ best_ms, args.iters });
     try out.print("GFLOPS: {d:.1} ({d:.1}% of H20 FP32 peak ~{d:.0} GFLOPS)\n", .{ gflops, gflops / h20_fp32_peak_gflops * 100, h20_fp32_peak_gflops });
+    return finishVerify(gpa, &ctx, dc, a, b, c, n, out);
 
-    // Verify: copy back and check 256 deterministic samples against an f64
-    // CPU dot product (relative tolerance for f32 accumulation).
+}
+
+fn finishVerify(gpa: std.mem.Allocator, ctx: *cu.Context, dc: u64, a: []f32, b: []f32, c: []f32, n: usize, out: *std.Io.Writer) !u8 {
+    _ = gpa;
+    const elems = n * n;
     try ctx.copyDtoH(std.mem.sliceAsBytes(c), dc);
     var bad: usize = 0;
     var max_rel: f64 = 0;
@@ -202,4 +217,76 @@ pub fn benchMain(
     }
     try out.print("PASS: 256/256 samples within rel err 1e-2 (max {d:.6})\n", .{max_rel});
     return 0;
+}
+
+const h20_fp16_peak_gflops: f64 = 148000;
+
+/// HGEMM harness: f16 inputs (small ints, exact in f16), f32 accumulate.
+fn runHgemm(gpa: std.mem.Allocator, ctx: *cu.Context, func: cu.Function, n: usize, iters: u32, out: *std.Io.Writer) !u8 {
+    const elems = n * n;
+    const ah = try gpa.alloc(f16, elems);
+    defer gpa.free(ah);
+    const bh = try gpa.alloc(f16, elems);
+    defer gpa.free(bh);
+    const a = try gpa.alloc(f32, elems); // f32 mirrors for the CPU reference
+    defer gpa.free(a);
+    const b = try gpa.alloc(f32, elems);
+    defer gpa.free(b);
+    var rng: u32 = 0x2468ace0;
+    for (ah, 0..) |*v, i| {
+        const x: i32 = @intCast(xorshift(&rng) % 5);
+        const val: f32 = @floatFromInt(x - 2); // -2..2, exact in f16
+        v.* = @floatCast(val);
+        a[i] = val;
+    }
+    for (bh, 0..) |*v, i| {
+        const x: i32 = @intCast(xorshift(&rng) % 5);
+        const val: f32 = @floatFromInt(x - 2);
+        v.* = @floatCast(val);
+        b[i] = val;
+    }
+
+    const hbytes = elems * @sizeOf(f16);
+    const cbytes = elems * @sizeOf(f32);
+    const da = try ctx.alloc(hbytes);
+    defer ctx.free(da);
+    const db = try ctx.alloc(hbytes);
+    defer ctx.free(db);
+    const dc = try ctx.alloc(cbytes);
+    defer ctx.free(dc);
+    try ctx.copyHtoD(da, std.mem.sliceAsBytes(ah));
+    try ctx.copyHtoD(db, std.mem.sliceAsBytes(bh));
+
+    var arg_a = da;
+    var arg_b = db;
+    var arg_c = dc;
+    var arg_n: u32 = @intCast(n);
+    var params = [_]?*anyopaque{ &arg_a, &arg_b, &arg_c, &arg_n };
+    const grid: u32 = @intCast((n + 63) / 64);
+
+    const start = try ctx.eventCreate();
+    defer start.destroy();
+    const stop = try ctx.eventCreate();
+    defer stop.destroy();
+    var best_ms: f32 = std.math.floatMax(f32);
+    var it: u32 = 0;
+    while (it < iters) : (it += 1) {
+        try start.record();
+        try func.launch(grid, grid, 1, 128, 1, 1, &params);
+        try stop.record();
+        try stop.sync();
+        const ms = try start.elapsedMs(stop);
+        if (ms < best_ms) best_ms = ms;
+    }
+
+    const flops = 2.0 * @as(f64, @floatFromInt(n)) * @as(f64, @floatFromInt(n)) * @as(f64, @floatFromInt(n));
+    const gflops = flops / (@as(f64, best_ms) * 1e6);
+    try out.print("bench: hgemm_mma n={d} iters={d}\n", .{ n, iters });
+    try out.print("best: {d:.3} ms over {d} iters\n", .{ best_ms, iters });
+    try out.print("GFLOPS: {d:.1} ({d:.1}% of H20 FP16 tensor peak ~{d:.0} GFLOPS)\n", .{ gflops, gflops / h20_fp16_peak_gflops * 100, h20_fp16_peak_gflops });
+
+    const c = try gpa.alloc(f32, elems);
+    defer gpa.free(c);
+    @memset(c, 0);
+    return finishVerify(gpa, ctx, dc, a, b, c, n, out);
 }
