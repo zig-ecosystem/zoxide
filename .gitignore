@@ -1,2 +1,4 @@
 .zig-cache/
 zig-out/
+zoxide-verify-*.txt
+!zoxide-verify-20260920T115015Z.txt

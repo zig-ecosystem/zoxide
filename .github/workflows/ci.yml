@@ -18,6 +18,8 @@ jobs:
       - name: Build host CLI
         run: zig build
 
+      - name: Host unit tests
+        run: zig build test
       - name: Build example kernels (PTX)
         run: zig build kernels
 
@@ -87,6 +89,28 @@ jobs:
           test "$(grep -c 'mma\.sync\.aligned\.m16n8k16' hgemm_mma2.ptx)" -eq 64
           if grep -qE '\$[0-9]|%\[' hgemm_mma2.ptx; then echo "hgemm_mma2: unsubstituted operand"; exit 1; fi
           test "$(grep -c 'bar\.sync' hgemm_mma2.ptx)" -eq 2
+          # wgmma kernels: sm_90a target, RS vs SS operand forms, pipeline depth.
+          for f in wgmma_smoke hgemm_wgmma hgemm_wgmma2 hgemm_wgmma3; do
+            grep -q '\.target sm_90a' "$f.ptx" || { echo "$f: not built for sm_90a"; exit 1; }
+            grep -q 'wgmma\.mma_async\.sync\.aligned\.m64n16k16' "$f.ptx"
+            if grep -qE '\$[0-9]|%\[' "$f.ptx"; then echo "$f: unsubstituted operand"; exit 1; fi
+          done
+          # v3 drains the tensor core every stage; v4/v5 keep one group in flight.
+          grep -q 'wgmma\.wait_group\.sync\.aligned 0' hgemm_wgmma.ptx
+          if grep -q 'wgmma\.wait_group\.sync\.aligned 1' hgemm_wgmma.ptx; then
+            echo "hgemm_wgmma: expected the 2-stage form to drain with wait_group 0"; exit 1
+          fi
+          grep -q 'wgmma\.wait_group\.sync\.aligned 1' hgemm_wgmma2.ptx
+          grep -q 'wgmma\.wait_group\.sync\.aligned 1' hgemm_wgmma3.ptx
+          # v5 sources A from registers: ldmatrix feeds 8 wgmma per stage, and the
+          # fragments must stay in registers (a spill here would defeat the point).
+          grep -q 'ldmatrix\.sync\.aligned\.m8n8\.x4' hgemm_wgmma3.ptx
+          if grep -q 'st\.local' hgemm_wgmma3.ptx; then
+            echo "hgemm_wgmma3: A fragments spilled to local memory"; exit 1
+          fi
+          # The RS operand form takes two brace groups (accumulators, then A);
+          # the SS form takes one followed by two descriptors.
+          grep -qE 'wgmma\.mma_async[^{]*\{[^}]*\}, \{[^}]*\}' hgemm_wgmma3.ptx
           echo "PTX invariants OK"
 
       - name: pod-verify degraded mode (no GPU runner)
@@ -94,7 +118,7 @@ jobs:
           set -euo pipefail
           ./scripts/pod-verify.sh ./zig-out/bin/zoxide zig-out/kernels
           ls zoxide-verify-*.txt
-          grep -q 'totals: PASS=1 FAIL=0 SKIP=6' zoxide-verify-*.txt
+          grep -q 'totals: PASS=1 FAIL=0 SKIP=10' zoxide-verify-*.txt
 
       - name: Cross-compile x86_64-linux-gnu (pod runner build)
         run: zig build -Dtarget=x86_64-linux-gnu.2.28 -Doptimize=ReleaseSmall --prefix /tmp/zoxide-gnu

@@ -42,6 +42,55 @@ pub fn addCudaModule(b: *std.Build, root: std.Build.LazyPath, opts: CudaOptions)
 /// <prefix>/kernels/<name>.ptx. The `cuda` import is wired automatically.
 /// Works for downstream packages too: pass `dep.path("src/cuda.zig")` as
 /// cuda_root.
+/// Compile step for one kernel source, targeting nvptx64 with the `cuda` module
+/// wired up. Returned rather than consumed so callers can add further imports to
+/// the kernel's root module — sharing a signature declaration with the host, for
+/// instance — before taking `getEmittedAsm()`.
+///
+/// ```zig
+/// const obj = zx.addNvptxKernelObject(b, "my_kernels", b.path("kernel.zig"), dep.path("src/cuda.zig"), .{});
+/// obj.root_module.addImport("kernels_abi", abi);
+/// exe.root_module.addAnonymousImport("kernel_ptx", .{ .root_source_file = obj.getEmittedAsm() });
+/// ```
+pub fn addNvptxKernelObject(
+    b: *std.Build,
+    name: []const u8,
+    source: std.Build.LazyPath,
+    cuda_root: std.Build.LazyPath,
+    opts: CudaOptions,
+) *std.Build.Step.Compile {
+    const kernel = b.addObject(.{
+        .name = name,
+        .root_module = b.createModule(.{
+            .root_source_file = source,
+            .target = b.resolveTargetQuery(.{
+                .cpu_arch = .nvptx64,
+                .os_tag = .cuda,
+                .cpu_model = .{ .explicit = opts.sm },
+            }),
+            .optimize = opts.optimize,
+            .strip = true,
+        }),
+    });
+    kernel.root_module.addImport("cuda", addCudaModule(b, cuda_root, opts));
+    // Zig's UBSan runtime hooks generate LLVM aliases, which the NVPTX backend
+    // rejects when they target kernel functions.
+    kernel.bundle_ubsan_rt = false;
+    return kernel;
+}
+
+/// Emitted PTX for one kernel source, for `@embedFile` into a host program.
+/// Use `addNvptxKernelObject` when the kernel needs imports beyond `cuda`.
+pub fn addNvptxKernelPath(
+    b: *std.Build,
+    name: []const u8,
+    source: std.Build.LazyPath,
+    cuda_root: std.Build.LazyPath,
+    opts: CudaOptions,
+) std.Build.LazyPath {
+    return addNvptxKernelObject(b, name, source, cuda_root, opts).getEmittedAsm();
+}
+
 pub fn addNvptxKernel(
     b: *std.Build,
     name: []const u8,
@@ -88,6 +137,13 @@ pub fn build(b: *std.Build) void {
     });
     b.installArtifact(exe);
 
+    // Host-side API for `dep.module("zoxide_host")` consumers: module loading,
+    // typed device allocations and compile-time-checked kernel launches. Target
+    // follows the consumer, so it is left unset here.
+    _ = b.addModule("zoxide_host", .{
+        .root_source_file = b.path("src/host.zig"),
+    });
+
     // Expose the device library for `dep.module("cuda")` consumers.
     _ = b.addModule("cuda", .{
         .root_source_file = b.path("src/cuda.zig"),
@@ -132,6 +188,20 @@ pub fn build(b: *std.Build) void {
     }
 
     // `zig build kernel`: single default kernel (kept for compatibility).
+    // `zig build test`: host-side unit tests (symbol mangling, Slice, Kernel
+    // signature reflection). Device code cannot be unit-tested here — it needs a
+    // GPU, which is what scripts/pod-verify.sh is for.
+    const host_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/host.zig"),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+        }),
+    });
+    const test_step = b.step("test", "Run host-side unit tests");
+    test_step.dependOn(&b.addRunArtifact(host_tests).step);
+
     const kernel_step = b.step("kernel", "Compile src/kernel.zig to PTX (zig-out/kernels/kernel.ptx)");
     kernel_step.dependOn(&addNvptxKernel(b, "kernel", b.path("src/kernel.zig"), b.path("src/cuda.zig"), .{}).step);
 }

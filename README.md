@@ -339,6 +339,86 @@ ints (≤64-bit), f32/f64, bool. Device output reaches host stdout at the next
 `debug_print` harness in `zoxide run` is therefore fail-open (it prints what
 to look for). Example: `src/examples/debug_print.zig`.
 
+## Using zoxide from your own package
+
+Both sides of a GPU program live in one package: the kernel compiles to PTX for
+nvptx64, the host program embeds it and launches it. `tests/downstream/` is a
+working copy of exactly this shape.
+
+```zig
+// build.zig
+const zoxide = b.dependency("zoxide", .{});
+const zx = @import("zoxide");
+
+// Kernel signatures, imported by both sides so they cannot drift apart.
+const abi = b.createModule(.{ .root_source_file = b.path("kernels_abi.zig") });
+
+const obj = zx.addNvptxKernelObject(b, "my_kernels", b.path("kernel.zig"), zoxide.path("src/cuda.zig"), .{});
+obj.root_module.addImport("kernels_abi", abi);
+
+exe.root_module.addImport("zoxide_host", zoxide.module("zoxide_host"));
+exe.root_module.addImport("kernels_abi", abi);
+exe.root_module.addAnonymousImport("kernel_ptx", .{ .root_source_file = obj.getEmittedAsm() });
+```
+
+```zig
+// kernels_abi.zig — the single source of truth for launch signatures
+pub const scale = fn (x: [*]const f32, y: [*]f32, k: f32, n: u32) void;
+```
+
+```zig
+// kernel.zig — device side
+pub fn scale(x: [*]const f32, y: [*]f32, k: f32, n: u32) callconv(.kernel) void {
+    const gid = cuda.globalThreadId();
+    if (gid < n) y[gid] = x[gid] * k;
+}
+comptime {
+    cuda.abi.assertMatches(api.scale, @TypeOf(scale));
+    _ = cuda.Keep(.{&scale}).__zoxide_keep_kernels;
+}
+```
+
+```zig
+// main.zig — host side
+const mod = try ctx.moduleFromPtx(@embedFile("kernel_ptx"));
+const scale = try mod.kernel(api.scale, gpu.symbol("my_kernels", "scale"));
+
+const dx = try ctx.allocSlice(f32, n);
+try ctx.upload(dx, host_x);
+try scale.launch(.{ .x = gpu.gridFor(n, 256) }, .{ .x = 256 }, .{ dx, dy, @as(f32, 2.5), @as(u32, n) });
+try ctx.synchronize();
+try ctx.download(host_y, dy);
+```
+
+### Why the signature is declared, not inferred
+
+`cuLaunchKernel` takes `void**` — one untyped pointer per argument. Nothing
+checks the count, the order or the width, and a mismatch does not fault: the
+kernel reads adjacent memory and returns plausible wrong answers. The two sides
+are also compiled separately for different targets, so they drift silently as a
+kernel's parameters change.
+
+Declaring the signature in a shared module turns all of that into compile errors:
+
+| mistake | before | now |
+| --- | --- | --- |
+| too few / too many arguments | silent | `kernel takes 4 argument(s), got 3` |
+| wrong scalar width | silent | `argument 3: kernel wants u32, got u64` |
+| wrong buffer element type | silent | `argument 1: kernel wants [*]f32 but got Slice(i32)` |
+| arguments transposed | silent | `argument 2: kernel wants f32, got u32` |
+| host pointer instead of device | silent | `pass a Slice(f32), got [*]const f32` |
+| device signature changed, host not | silent | `signature mismatch at parameter 3: declared u32, defined u64` |
+
+The declaration omits `callconv(.kernel)` because it has to: that convention
+resolves per target, and on a host architecture
+`std.builtin.CallingConvention.kernel` is `unreachable`, so the type cannot be
+named there. Only the parameter list matters for launching, so the comparison
+ignores calling convention.
+
+`moduleFromPtx` lets the driver JIT the PTX, which is why no ptxas is needed at
+build time. Pre-assembling with ptxas and using `module` instead moves kernel
+errors to build time and skips the JIT, at the cost of pinning one architecture.
+
 ## Pod verification script
 
 Easiest path — one bundle, three commands on the pod:

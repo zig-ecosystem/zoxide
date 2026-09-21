@@ -6,5 +6,5 @@
     .dependencies = .{
         .zoxide = .{ .path = "../.." },
     },
-    .paths = .{ "build.zig", "build.zig.zon", "kernel.zig" },
+    .paths = .{ "build.zig", "build.zig.zon", "kernel.zig", "kernels_abi.zig", "main.zig" },
 }
