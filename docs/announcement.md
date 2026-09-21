@@ -4,7 +4,23 @@
 
 ---
 
-## v0.4.0-alpha — tensor-core instructions unlocked（2026-09-20）
+## v0.0.7-alpha — warpgroup MMA, 54.3% of FP16 peak（2026-09-21）
+
+Hopper warpgroup MMA 落地：**80.3 TFLOPS（FP16 峰值 54.3%），结果精确，对 mma.sync 基线 1.49x**（53.8 TF / 36.4%）。
+
+wgmma 和 mma.sync 有两处本质不同。一是 **LLVM 没有 `wgmma.mma_async` intrinsic**——NVVM 只暴露 fence / commit_group / wait_group 三条控制指令，MMA 本身只能手写 inline asm，且门控在 `sm_90a` 而非 `sm_90`（此前记录的「生成器已含 wgmma wrapper」已订正）。二是操作数不是普通二维数组：tensor core 按 **128 字节连续的 8×8 core matrix** 读共享内存，tile 必须按 core matrix 序列打包，再用 64 位描述符（起始地址 + 两个跨 core matrix 字节步长）寻址。
+
+布局一次写对，靠的是不猜：位域与 canonical layout 从 CUTLASS `cute`（BSD-3-Clause）推导，累加器寄存器到 (m,n) 的映射用 `CLayout_64xN`。另配自检 kernel `wgmma_smoke`——发一条 wgmma，1024 个累加元素全部跟闭式重算比对，整数输入所以 f16/f32 都精确，把布局层从 GEMM tiling 里隔离出来单独验。
+
+代价要说清楚：**54.3% 是带着 Zig 15 输出上限跑出来的**。`m64nNk16` 每线程需要 N/2 个累加器寄存器且每个都得是 asm output，`m64n32k16`（16 个）正好超 1 个，所以只能用 `m64n16k16` 铺 8 次覆盖 N=128，A tile 每段重读 8 遍。上限是 ZIR 编码的历史遗留（`outputs_len` 已是 u7），放到 32 就能用 `m64n64k16`——见 `docs/upstream-asm-output-limit.md`。
+
+发布文案（X 单帖）：
+
+> Hopper warpgroup MMA in pure Zig: 80.3 TFLOPS, 54.3% of H20 FP16 tensor peak, exact results — 1.49x over the mma.sync baseline. No LLVM intrinsic exists for wgmma.mma_async, so it is hand-written inline asm + 64-bit smem descriptors. github.com/zig-ecosystem/zoxide
+
+---
+
+## v0.0.4-alpha — tensor-core instructions unlocked（2026-09-20）
 
 ![catalog coverage](assets/catalog-coverage.svg)
 
@@ -12,7 +28,7 @@ M4d 前提证伪后重启：Zig asm 的 `%[name]` 具名操作数替换确认可
 
 ---
 
-## v0.3.0-alpha — verification tooling + gpu_printf（2026-09-20）
+## v0.0.3-alpha — verification tooling + gpu_printf（2026-09-20）
 
 ![pod-verify](assets/pod-verify.svg)
 
@@ -22,11 +38,11 @@ M4d 前提证伪后重启：Zig asm 的 `%[name]` 具名操作数替换确认可
 
 发布文案（X 单帖）：
 
-> zoxide v0.3.0-alpha: one-command GPU regression for Zig CUDA kernels — a shell script + a k8s Job template. Plus gpu-side printf via comptime-packed varargs. github.com/zig-ecosystem/zoxide
+> zoxide v0.0.3-alpha: one-command GPU regression for Zig CUDA kernels — a shell script + a k8s Job template. Plus gpu-side printf via comptime-packed varargs. github.com/zig-ecosystem/zoxide
 
 ---
 
-## v0.2.0-beta — SGEMM line complete（2026-09-20）
+## v0.0.2-beta — SGEMM line complete（2026-09-20）
 
 ![SGEMM progression on H20](assets/sgemm-progression.svg)
 

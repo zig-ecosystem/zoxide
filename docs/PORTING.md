@@ -96,7 +96,7 @@ kernel.zig → PTX（NVPTX 后端）→ ptxas 编排 → doctor。**结论：路
 2. 原子操作全集（scope/ordering 矩阵）、cp.async、TMA、WGMMA、cluster 等按 arch 门控 —— 部分完成（329 个 wrapper 已生成，含 cp.async/wgmma/cluster/tma 的 NVVM 可映射子集）
 3. 与 cuda-oxide 生成的声明做 diff 对拍（数据源相同，输出应语义等价）—— 改为"同数据源 + PTX 指令级抽查"
 
-**M3 关键发现（v0.3.0-alpha 再次修正）**：catalog 1025 条中 329 条走真 NVVM intrinsic；689 条在 cuda-oxide 里靠 LLVM inline PTX 降落。最初误判"Zig asm 无操作数替换、不可映射"——真相是 Zig 支持 `%[name]` 具名操作数替换（位置形式 `$0`/`%0`/`${0}` 不支持）。生成器把 probe 的位置模板重写为具名形式后，asm 类已有 618 条生成（`src/gen/instrinsics_asm.zig`），含 mma.sync 多输出；剩余未映射主因是 zig asm 操作数上限（≤15 输出 / ≤31 输入，tcgen05.ld 等超宽指令受阻）。
+**M3 关键发现（v0.0.3-alpha 再次修正）**：catalog 1025 条中 329 条走真 NVVM intrinsic；689 条在 cuda-oxide 里靠 LLVM inline PTX 降落。最初误判"Zig asm 无操作数替换、不可映射"——真相是 Zig 支持 `%[name]` 具名操作数替换（位置形式 `$0`/`%0`/`${0}` 不支持）。生成器把 probe 的位置模板重写为具名形式后，asm 类已有 618 条生成（`src/gen/instrinsics_asm.zig`），含 mma.sync 多输出；剩余未映射主因是 zig asm 操作数上限（≤15 输出 / ≤31 输入，tcgen05.ld 等超宽指令受阻）。
 
 验收：生成覆盖率 ≥ catalog 的 90%；抽样 100 个 intrinsics 编译通过。——修正为：**可映射子集（NVVM intrinsic 类）覆盖 100%**（329/329），smoke kernel 10 个 API 全部降为真实 PTX 指令。
 

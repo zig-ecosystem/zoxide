@@ -78,6 +78,20 @@ Raising the cap to 32 (the `output_type_bits` ceiling) would unlock
 out of reach at 32; lifting that too would additionally require widening
 `output_type_bits`.
 
+### Measured cost (H20, n=4096, 2026-09-21)
+
+| kernel | instruction | GFLOPS | % of FP16 tensor peak |
+| --- | --- | --- | --- |
+| `hgemm_mma2` | `mma.sync m16n8k16` | 53839 | 36.4% |
+| `hgemm_wgmma` | `wgmma.mma_async m64n16k16` | 80308 | 54.3% |
+
+So even the narrowest wgmma shape — the only one Zig can express — is worth
+1.49x over a tuned `mma.sync` kernel, at exact results. That is the floor, not
+the ceiling: the n16 tiling re-reads the A tile from shared memory 8x per
+K-stage. What `m64n64k16` would add is not yet measured, and measuring it is
+exactly what this cap prevents. Quantifying it requires a patched compiler,
+which makes the patch its own prerequisite.
+
 ## Proposed change
 
 In `lib/std/zig/AstGen.zig`:
@@ -99,7 +113,10 @@ No ZIR or Sema change should be needed; `outputs_len` is already `u7` and
 ## Not yet done
 
 - Build a patched compiler and confirm 32 outputs round-trip through Sema and
-  reach the NVPTX backend intact.
+  reach the NVPTX backend intact. The reasoning above is read from the source
+  (`outputs_len` is already `u7`, `output_type_bits` already 32 bits, and
+  `Sema.zirAsm` no longer truncates); it has not been confirmed by building a
+  patched compiler.
 - Measure `m64n64k16` against the `m64n16k16` kernel on H20 to quantify what the
   cap costs.
 - File upstream. Note `ziglang/zig` issue creation is restricted to

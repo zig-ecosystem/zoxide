@@ -182,6 +182,7 @@ SGEMM (C = A·B, square f32) harness with CUDA event timing:
 ./zoxide bench sgemm_swz.ptx  --n 4096 --iters 10
 ./zoxide bench hgemm_mma.ptx  --n 4096 --iters 10   # fp16 tensor core (mma.sync m16n8k16)
 ./zoxide bench hgemm_mma2.ptx --n 4096 --iters 10   # + ldmatrix, 128x128 tile, cp.async double buffer
+./zoxide bench hgemm_wgmma.ptx --n 4096 --iters 10 --arch sm_90a   # warpgroup MMA (wgmma.mma_async)
 ```
 
 - `sgemm_naive.zig`: one thread per C element, direct global loads (baseline).
@@ -222,6 +223,31 @@ reg 15319 (34.8%) of the ~44 TFLOPS FP32 peak; reg verified at n=4000
   tile (warp tile 64x64 = 4x8 mma), cp.async.cg 16B double-buffered pipeline
   (`cp_async_wait_group` takes a comptime immediate — the NVVM intrinsic's
   runtime i32 form does not select).
+  Measured on H20: 53.8 TFLOPS (36.4% of FP16 tensor peak), exact results.
+- `hgemm_wgmma.zig`: Hopper warpgroup MMA. **80.3 TFLOPS (54.3% of FP16
+  tensor peak) on H20, exact results** — 1.49x over `hgemm_mma2`. One
+  warpgroup (128 threads) per block, 64x128 block tile, K-slice 16, cp.async
+  double buffering, both operands read asynchronously from shared memory via
+  64-bit matrix descriptors. Requires `sm_90a` and n % 128 == 0.
+
+  Two things make wgmma different from `mma.sync`. First, there is no LLVM
+  intrinsic — NVVM exposes only `wgmma.fence` / `commit_group` / `wait_group`,
+  never the MMA, so `src/wgmma.zig` hand-writes the instruction as inline asm.
+  Second, operands are not plain 2-D arrays: the tensor core reads shared
+  memory as 8x8 *core matrices* of 128 contiguous bytes, so tiles are packed
+  as a sequence of core matrices and addressed through a descriptor encoding
+  start address plus two inter-core-matrix byte strides.
+  `src/examples/wgmma_smoke.zig` verifies exactly that layer in isolation —
+  one wgmma, all 1024 accumulator elements checked against closed form with
+  integer inputs so both f16 and f32 are exact:
+  `./zoxide run kernels/wgmma_smoke.ptx --arch sm_90a`.
+
+  The shape is capped at `m64n16k16` by Zig's 15-output inline-asm limit:
+  `m64nNk16` needs N/2 accumulator registers per thread and every one must be
+  an asm output operand, so `m64n32k16` (16 regs) is already one over. The
+  kernel therefore tiles n16 eight times to cover N=128, re-reading the A
+  tile from shared memory 8x per K-stage instead of once. The 54.3% above is
+  achieved *with* that handicap; see `docs/upstream-asm-output-limit.md`.
 
 If the pod has Nsight Compute, profile with:
 
@@ -264,7 +290,7 @@ to look for). Example: `src/examples/debug_print.zig`.
 Easiest path — one bundle, three commands on the pod:
 
 ```sh
-curl -LO https://github.com/zig-ecosystem/zoxide/releases/download/v0.3.0-alpha/zoxide-linux-x64.tar.gz
+curl -LO https://github.com/zig-ecosystem/zoxide/releases/download/v0.0.7-alpha/zoxide-linux-x64.tar.gz
 tar xzf zoxide-linux-x64.tar.gz   # ./zoxide ./kernels/ ./scripts/
 ./scripts/pod-verify.sh ./zoxide ./kernels
 ```

@@ -67,7 +67,7 @@ Zig 0.16.0, target `nvptx64-cuda`, `-mcpu sm_90`; ptxas 12.8 for validation.
 
 - ~~附 zoxide 链接~~ 应作者要求不引用 zoxide，用抽象描述（"CUDA kernels in pure Zig, verified on Hopper hardware"）。
 - 如果维护者倾向 option 3，我们可以跟进提供常用 builtin 清单（catalog 的 family 分布直接可给）。
-- 发出后在 ROADMAP.md v0.4.0 节更新 issue 链接。
+- 发出后在 ROADMAP.md v0.0.4 节更新 issue 链接。
 
 ## 状态更新（2026-09-20）
 
