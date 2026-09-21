@@ -1,53 +1,64 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="880" height="420" viewBox="0 0 880 420" font-family="Menlo, monospace">
-  <rect width="880" height="420" fill="#0d1117"/>
-  <text x="440" y="32" fill="#e6edf3" font-size="18" text-anchor="middle" font-weight="bold">zoxide HGEMM on NVIDIA H20 — % of FP16 tensor peak (~148 TFLOPS)</text>
-  <text x="440" y="52" fill="#6e7681" font-size="12" text-anchor="middle">n=4096, best of 10 — every variant exact (max err 0)</text>
-  <line x1="70" y1="320" x2="620" y2="320" stroke="#30363d" stroke-width="1"/>
-  <!-- bars: height = pct * 3.8, baseline y=320 -->
-  <line x1="70" y1="130" x2="620" y2="130" stroke="#484f58" stroke-width="1" stroke-dasharray="4 4"/>
-  <text x="64" y="134" fill="#6e7681" font-size="11" text-anchor="end">50%</text>
-  <!-- hgemm_mma 24.9% -->
-  <rect x="100" y="225.4" width="90" height="94.6" fill="#8b949e"/>
-  <text x="145" y="217" fill="#8b949e" font-size="13" text-anchor="middle">24.9%</text>
-  <text x="145" y="342" fill="#c9d1d9" font-size="11" text-anchor="middle">hgemm_mma</text>
-  <text x="145" y="359" fill="#6e7681" font-size="10" text-anchor="middle">36.8 TF</text>
-  <text x="145" y="376" fill="#6e7681" font-size="10" text-anchor="middle">mma.sync m16n8k16</text>
-  <text x="145" y="391" fill="#6e7681" font-size="10" text-anchor="middle">warp-level</text>
-  <!-- hgemm_mma2 36.4% -->
-  <rect x="240" y="181.7" width="90" height="138.3" fill="#79c0ff"/>
-  <text x="285" y="173" fill="#79c0ff" font-size="13" text-anchor="middle">36.4%</text>
-  <text x="285" y="342" fill="#c9d1d9" font-size="11" text-anchor="middle">hgemm_mma2</text>
-  <text x="285" y="359" fill="#6e7681" font-size="10" text-anchor="middle">53.8 TF</text>
-  <text x="285" y="376" fill="#6e7681" font-size="10" text-anchor="middle">+ ldmatrix / cp.async</text>
-  <text x="285" y="391" fill="#6e7681" font-size="10" text-anchor="middle">128×128 tile</text>
-  <!-- hgemm_wgmma 54.3% -->
-  <rect x="380" y="113.7" width="90" height="206.3" fill="#d29922"/>
-  <text x="425" y="105" fill="#d29922" font-size="13" text-anchor="middle">54.3%</text>
-  <text x="425" y="342" fill="#c9d1d9" font-size="11" text-anchor="middle">hgemm_wgmma</text>
-  <text x="425" y="359" fill="#6e7681" font-size="10" text-anchor="middle">80.3 TF</text>
-  <text x="425" y="376" fill="#6e7681" font-size="10" text-anchor="middle">wgmma m64n16k16</text>
-  <text x="425" y="391" fill="#6e7681" font-size="10" text-anchor="middle">2-stage pipeline</text>
-  <!-- hgemm_wgmma2 58.3% -->
-  <rect x="520" y="98.5" width="90" height="221.5" fill="#f0b72f"/>
-  <text x="565" y="90" fill="#f0b72f" font-size="13" text-anchor="middle" font-weight="bold">58.3%</text>
-  <text x="565" y="342" fill="#e6edf3" font-size="11" text-anchor="middle" font-weight="bold">hgemm_wgmma2</text>
-  <text x="565" y="359" fill="#6e7681" font-size="10" text-anchor="middle">86.3 TF</text>
-  <text x="565" y="376" fill="#6e7681" font-size="10" text-anchor="middle">same shape</text>
-  <text x="565" y="391" fill="#6e7681" font-size="10" text-anchor="middle">3-stage, wait_group 1</text>
-  <!-- step deltas, placed in the gaps between bars -->
-  <text x="355" y="205" fill="#d29922" font-size="11" text-anchor="middle" font-weight="bold">+17.9pp</text>
-  <text x="495" y="165" fill="#f0b72f" font-size="11" text-anchor="middle" font-weight="bold">+4.0pp</text>
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="420" viewBox="0 0 960 420" font-family="Menlo, monospace">
+  <rect width="960" height="420" fill="#0d1117"/>
+  <text x="480" y="32" fill="#e6edf3" font-size="18" text-anchor="middle" font-weight="bold">zoxide HGEMM on NVIDIA H20 — % of FP16 tensor peak (~148 TFLOPS)</text>
+  <text x="480" y="52" fill="#6e7681" font-size="12" text-anchor="middle">n=4096, best of 10 — every variant exact (max err 0)</text>
+  <line x1="70" y1="320" x2="670" y2="320" stroke="#30363d" stroke-width="1"/>
+  <!-- bars: height = pct * 3.5, baseline y=320 -->
+  <line x1="70" y1="145" x2="670" y2="145" stroke="#484f58" stroke-width="1" stroke-dasharray="4 4"/>
+  <text x="64" y="149" fill="#6e7681" font-size="11" text-anchor="end">50%</text>
+  <!-- 24.9% -->
+  <rect x="95" y="232.8" width="85" height="87.2" fill="#8b949e"/>
+  <text x="137" y="224" fill="#8b949e" font-size="13" text-anchor="middle">24.9%</text>
+  <text x="137" y="342" fill="#c9d1d9" font-size="11" text-anchor="middle">hgemm_mma</text>
+  <text x="137" y="359" fill="#6e7681" font-size="10" text-anchor="middle">36.8 TF</text>
+  <text x="137" y="376" fill="#6e7681" font-size="10" text-anchor="middle">mma.sync</text>
+  <text x="137" y="390" fill="#6e7681" font-size="10" text-anchor="middle">warp-level</text>
+  <!-- 36.4% -->
+  <rect x="215" y="192.6" width="85" height="127.4" fill="#79c0ff"/>
+  <text x="257" y="184" fill="#79c0ff" font-size="13" text-anchor="middle">36.4%</text>
+  <text x="257" y="342" fill="#c9d1d9" font-size="11" text-anchor="middle">hgemm_mma2</text>
+  <text x="257" y="359" fill="#6e7681" font-size="10" text-anchor="middle">53.8 TF</text>
+  <text x="257" y="376" fill="#6e7681" font-size="10" text-anchor="middle">+ ldmatrix</text>
+  <text x="257" y="390" fill="#6e7681" font-size="10" text-anchor="middle">+ cp.async</text>
+  <!-- 54.2% -->
+  <rect x="335" y="130.3" width="85" height="189.7" fill="#bb8009"/>
+  <text x="377" y="122" fill="#bb8009" font-size="13" text-anchor="middle">54.2%</text>
+  <text x="377" y="342" fill="#c9d1d9" font-size="11" text-anchor="middle">hgemm_wgmma</text>
+  <text x="377" y="359" fill="#6e7681" font-size="10" text-anchor="middle">80.2 TF</text>
+  <text x="377" y="376" fill="#6e7681" font-size="10" text-anchor="middle">wgmma m64n16k16</text>
+  <text x="377" y="390" fill="#6e7681" font-size="10" text-anchor="middle">2-stage</text>
+  <!-- 58.3% -->
+  <rect x="455" y="115.9" width="85" height="204.1" fill="#d29922"/>
+  <text x="497" y="107" fill="#d29922" font-size="13" text-anchor="middle">58.3%</text>
+  <text x="497" y="342" fill="#c9d1d9" font-size="11" text-anchor="middle">hgemm_wgmma2</text>
+  <text x="497" y="359" fill="#6e7681" font-size="10" text-anchor="middle">86.3 TF</text>
+  <text x="497" y="376" fill="#6e7681" font-size="10" text-anchor="middle">3-stage pipeline</text>
+  <text x="497" y="390" fill="#6e7681" font-size="10" text-anchor="middle">wait_group 1</text>
+  <!-- 64.3% -->
+  <rect x="575" y="94.9" width="85" height="225.1" fill="#f0b72f"/>
+  <text x="617" y="86" fill="#f0b72f" font-size="13" text-anchor="middle" font-weight="bold">64.3%</text>
+  <text x="617" y="342" fill="#e6edf3" font-size="11" text-anchor="middle" font-weight="bold">hgemm_wgmma3</text>
+  <text x="617" y="359" fill="#6e7681" font-size="10" text-anchor="middle">95.2 TF</text>
+  <text x="617" y="376" fill="#6e7681" font-size="10" text-anchor="middle">A from registers</text>
+  <text x="617" y="390" fill="#6e7681" font-size="10" text-anchor="middle">(wgmma RS)</text>
+  <!-- step deltas in the gaps -->
+  <text x="197" y="215" fill="#79c0ff" font-size="10" text-anchor="middle" font-weight="bold">+11.5</text>
+  <text x="317" y="160" fill="#bb8009" font-size="10" text-anchor="middle" font-weight="bold">+17.8</text>
+  <text x="437" y="132" fill="#d29922" font-size="10" text-anchor="middle" font-weight="bold">+4.1</text>
+  <text x="557" y="110" fill="#f0b72f" font-size="10" text-anchor="middle" font-weight="bold">+6.0</text>
   <!-- right-hand notes -->
   <g font-size="12">
-    <text x="646" y="110" fill="#c9d1d9">1.60x over the tuned</text>
-    <text x="646" y="128" fill="#c9d1d9">mma.sync baseline</text>
-    <text x="646" y="170" fill="#8b949e">no LLVM intrinsic for</text>
-    <text x="646" y="188" fill="#8b949e">wgmma.mma_async — hand-</text>
-    <text x="646" y="206" fill="#8b949e">written inline asm, sm_90a</text>
-    <text x="646" y="248" fill="#f0b72f">still capped at n16: Zig</text>
-    <text x="646" y="266" fill="#f0b72f">allows 15 asm outputs and</text>
-    <text x="646" y="284" fill="#f0b72f">m64n32k16 needs 16, which</text>
-    <text x="646" y="302" fill="#f0b72f">costs 3.3x the shared-mem</text>
-    <text x="646" y="320" fill="#f0b72f">operand traffic per flop</text>
+    <text x="696" y="105" fill="#c9d1d9">1.77x over the tuned</text>
+    <text x="696" y="123" fill="#c9d1d9">mma.sync baseline</text>
+    <text x="696" y="163" fill="#8b949e">no LLVM intrinsic for</text>
+    <text x="696" y="181" fill="#8b949e">wgmma.mma_async — hand-</text>
+    <text x="696" y="199" fill="#8b949e">written inline asm, sm_90a</text>
+    <text x="696" y="239" fill="#f0b72f">operand traffic now matches</text>
+    <text x="696" y="257" fill="#f0b72f">n128: 42.7 flops/byte, up</text>
+    <text x="696" y="275" fill="#f0b72f">from 12.8. What is left is</text>
+    <text x="696" y="293" fill="#f0b72f">per-instruction cost, and</text>
+    <text x="696" y="311" fill="#f0b72f">testing that needs a wider N</text>
+    <text x="696" y="329" fill="#f0b72f">— blocked by Zig's 15-output</text>
+    <text x="696" y="347" fill="#f0b72f">inline asm cap</text>
   </g>
 </svg>

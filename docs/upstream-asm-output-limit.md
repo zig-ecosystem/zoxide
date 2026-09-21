@@ -84,6 +84,8 @@ out of reach at 32; lifting that too would additionally require widening
 | --- | --- | --- | --- |
 | `hgemm_mma2` | `mma.sync m16n8k16` | 53839 | 36.4% |
 | `hgemm_wgmma` | `wgmma.mma_async m64n16k16` | 80308 | 54.3% |
+| `hgemm_wgmma2` | + 3-stage pipeline | 86279 | 58.3% |
+| `hgemm_wgmma3` | + A from registers (RS) | 95175 | 64.3% |
 
 So even the narrowest wgmma shape — the only one Zig can express — is worth
 1.49x over a tuned `mma.sync` kernel, at exact results. A 3-stage pipeline then
@@ -101,17 +103,36 @@ been eliminated by experiment on H20 (details in `docs/verification/`):
 | too few independent warpgroups | eliminated — 12 blocks resident per SM is 12 independent wgmma streams, 75% thread occupancy |
 | **per-instruction efficiency of n16** | **the only candidate left** |
 
-Note also that the 3.3x operand-traffic penalty is *invariant to tile shape*:
-widening M or N changes how many blocks run, not how many times each wgmma
-re-reads its A tile. Only a wider N **per instruction** changes it. So with the
-cap in place there is nothing left to tune at the tiling level — which is a
-concrete, measured statement that a compiler limit, not the hardware and not the
-kernel, is what bounds Zig on this workload.
+### Correction, and why the case is now stronger
 
-This also resolves a circularity I previously flagged. Quantifying the cap's cost
-needs `m64n64k16`, which needs the patch, which I had wanted the cost figure to
-justify. The elimination above justifies the patch on its own: it is now both the
-measuring instrument and the likely fix.
+An earlier revision of this document claimed the 3.3x operand-traffic penalty was
+*invariant to tile shape*, so that only a wider N per instruction could fix it
+and nothing was left to tune below the cap. That was wrong. It reasoned entirely
+inside the all-shared (SS) form of `wgmma`. The RS form takes A from registers
+and still has only 8 accumulators for `m64n16k16`, so it fits the cap:
+
+| form | shared reads per K-stage | flops/byte |
+| --- | --- | --- |
+| all-shared n16 | 8 × (A 2048 + B 512) = 20480 B | 12.8 |
+| A in registers (RS) | A 2048 + 8 × 512 = 6144 B | 42.7 |
+| one n128, all-shared | A 2048 + B 4096 = 6144 B | 42.7 |
+
+Loading A once per stage and feeding all eight wgmma from registers reads exactly
+what a single `m64n128k16` would. Measured on H20 this is worth +6.0pp, taking
+`hgemm_wgmma3` to 95175 GFLOPS (64.3% of peak), still exact.
+
+The lesson is about method: elimination narrowed the cause to "the n16 shape",
+and I then treated that as an atomic explanation. It was not — it had at least
+two separable components, operand traffic and per-instruction cost, and the first
+had a second solution that did not need this patch.
+
+That makes the case for raising the cap sharper rather than weaker. **Operand
+traffic now matches what a wide-N instruction would demand, and the kernel is
+still 35.7pp off peak.** Whatever remains is per-instruction cost: eight
+instructions doing one instruction's work. Testing that requires a wider N, which
+is precisely what the cap forbids. The argument used to be "quantify something we
+suspect dominates"; it is now "the operand-traffic explanation has been spent, so
+the rest has to be per-instruction, and we are barred from measuring it."
 
 ## Proposed change
 

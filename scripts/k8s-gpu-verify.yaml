@@ -33,7 +33,7 @@ spec:
               nvidia.com/gpu: 1
           env:
             - name: ARTIFACT_URL
-              value: "https://github.com/zig-ecosystem/zoxide/releases/download/v0.0.8-alpha/zoxide-linux-x64.tar.gz"
+              value: "https://github.com/zig-ecosystem/zoxide/releases/download/v0.0.9-alpha/zoxide-linux-x64.tar.gz"
           command: ["/bin/sh", "-c"]
           args:
             - |

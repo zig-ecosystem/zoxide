@@ -4,6 +4,36 @@
 
 ---
 
+## v0.0.9-alpha — A from registers, 64.3% of FP16 peak（2026-09-21）
+
+![hgemm progression](assets/hgemm-progression.svg)
+
+**95.2 TFLOPS（FP16 峰值 64.3%），结果精确，对 mma.sync 基线累计 1.77x。**
+
+这一轮的起点是纠正我自己上一轮的错误结论。当时我把剩余 41.7pp 全归给「n16 shape」，并断言「3.3 倍操作数流量对 tile 形状不变，只有单条指令的 N 变宽才能改变它，所以在 15 输出上限解除前 tile 层面没有可动的东西」。
+
+错了。我整个推理都待在 wgmma 的 **SS 形态**（A、B 都从共享内存取）里，漏掉了 **RS 形态**——A 从寄存器取，而 `m64n16k16` 的累加器仍然只有 8 个，**落在 15 输出限制内**。
+
+| 形态 | 每 K 段共享内存读取 | flops/byte |
+| --- | --- | --- |
+| SS n16 | 8 × (A 2048 + B 512) = 20480 B | 12.8 |
+| **RS n16（本轮）** | A 2048 + 8 × 512 = **6144 B** | **42.7** |
+| SS n128（需补丁） | A 2048 + B 4096 = 6144 B | 42.7 |
+
+A 每段只读一次、之后从寄存器喂给全部 8 条 wgmma，读取量与单条 `m64n128k16` 完全相同。实测值 6.0pp。
+
+方法上的教训：排除法把原因收敛到「shape」之后，我把它当成了不可分解的原因。它其实至少含两个可分的成分——操作数流量和单指令成本——而前者还有第二条解法。排除法指方向，不能代替对机制的分解。
+
+有两个 bug 只在读生成的 PTX 时才暴露。一是 `afrag[kt % 2]` 的运行时下标把寄存器数组赶进了 local memory（每轮 20 条 `st.local`，比想省掉的共享内存重读更糟）；二是即便改成双缓冲，寄存器分配器认为每个 fragment 在其最后一条 wgmma 之后即死亡，把物理寄存器回收给下一段，**悄悄把源码表达的双缓冲合并掉了**——而此时上一段的 wgmma 仍在异步读它。后者用 CUTLASS 的 `warpgroup_fence_operand` 手法（空 asm 带 `+r`）钉住。
+
+这同时让编译器补丁的理由变强：操作数流量既已与 n128 持平，却仍距峰值 35.7pp，剩下的只能是单指令成本（8 条指令做 1 条的事），而测量它必须把 N 变宽——正是 15 输出上限禁止的。
+
+发布文案（X 单帖）：
+
+> Zig on Hopper, 95.2 TFLOPS HGEMM — 64.3% of H20 FP16 tensor peak, exact, 1.77x over a tuned mma.sync kernel. This round came from being wrong: I had argued the n16 operand penalty needed a wider wgmma N. It needed A in registers instead, which fits the compiler's asm limits today. github.com/zig-ecosystem/zoxide
+
+---
+
 ## v0.0.8-alpha — 3-stage wgmma pipeline, 58.3% of FP16 peak（2026-09-21）
 
 ![hgemm progression](assets/hgemm-progression.svg)

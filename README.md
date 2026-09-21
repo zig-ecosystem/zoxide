@@ -184,6 +184,7 @@ SGEMM (C = A·B, square f32) harness with CUDA event timing:
 ./zoxide bench hgemm_mma2.ptx --n 4096 --iters 10   # + ldmatrix, 128x128 tile, cp.async double buffer
 ./zoxide bench hgemm_wgmma.ptx  --n 4096 --iters 10 --arch sm_90a   # warpgroup MMA (wgmma.mma_async)
 ./zoxide bench hgemm_wgmma2.ptx --n 4096 --iters 10 --arch sm_90a   # + 3-stage pipeline
+./zoxide bench hgemm_wgmma3.ptx --n 4096 --iters 10 --arch sm_90a   # + A from registers (RS)
 ```
 
 - `sgemm_naive.zig`: one thread per C element, direct global loads (baseline).
@@ -251,8 +252,8 @@ reg 15319 (34.8%) of the ~44 TFLOPS FP32 peak; reg verified at n=4000
   kernel therefore tiles n16 eight times to cover N=128, re-reading the A
   tile from shared memory 8x per K-stage instead of once. The 54.3% above is
   achieved *with* that handicap; see `docs/upstream-asm-output-limit.md`.
-- `hgemm_wgmma2.zig`: same shape, 3-stage pipeline. **86.3 TFLOPS (58.3% of
-  FP16 tensor peak), exact results** — 1.60x over `hgemm_mma2`.
+- `hgemm_wgmma2.zig`: same shape, 3-stage pipeline. 86.3 TFLOPS (58.3% of FP16
+  tensor peak), exact results — 1.60x over `hgemm_mma2`.
 
   `hgemm_wgmma` ended every K-stage with `wgmma.wait_group 0`, draining the
   tensor core. With two buffers it had no choice: the buffer about to be
@@ -274,6 +275,33 @@ reg 15319 (34.8%) of the ~44 TFLOPS FP32 peak; reg verified at n=4000
   conflict-free when a tile retains a wide row pitch, but these tiles are
   core-matrix packed, and 128 contiguous bytes against 32 banks x 4 B already
   sweeps every bank exactly once.
+- `hgemm_wgmma3.zig`: A moved from shared memory into registers (`wgmma` RS
+  form). **95.2 TFLOPS (64.3% of FP16 tensor peak), exact results** — 1.77x over
+  `hgemm_mma2`.
+
+  In the all-shared form each of the 8 wgmma covering a 128-wide tile re-reads
+  the whole A tile, so a K-stage pulls 20480 B out of shared memory. Loading A
+  once into registers leaves 6144 B — exactly what a single `m64n128k16` would
+  read, 42.7 flops/byte against 12.8. The RS form still has only 8 accumulators,
+  so it fits the 15-output asm cap that blocks the wide shapes.
+
+  A no longer feeds a descriptor, so it drops core-matrix packing for the plain
+  `[64][16]` f16 layout `ldmatrix` wants. CUTLASS's `ALayout_64x16` turns out to
+  be the `mma.sync m16n8k16` A-fragment layout applied to each warp's own 16
+  rows — one `ldmatrix.x4` — so `hgemm_mma2`'s addressing is reused verbatim.
+
+  An in-flight wgmma reads its A registers *after* issuing, so with
+  `wait_group 1` leaving the previous stage running the fragments have to be
+  double-buffered, and two things in the generated PTX had to be fixed before
+  that held: a runtime array index pushed the fragments into local memory, and
+  the register allocator then recycled each fragment's registers right after its
+  last wgmma, collapsing the double buffer. See the comments in the kernel and
+  `wgmma.fenceFragment`.
+
+  Operand traffic now matches what a wide-N instruction would demand and the
+  kernel is still 35.7pp off peak, so what remains is per-instruction cost —
+  eight instructions doing one instruction's work. Measuring that needs a wider
+  N, which `docs/upstream-asm-output-limit.md` explains we cannot express.
 
 If the pod has Nsight Compute, profile with:
 
@@ -316,7 +344,7 @@ to look for). Example: `src/examples/debug_print.zig`.
 Easiest path — one bundle, three commands on the pod:
 
 ```sh
-curl -LO https://github.com/zig-ecosystem/zoxide/releases/download/v0.0.8-alpha/zoxide-linux-x64.tar.gz
+curl -LO https://github.com/zig-ecosystem/zoxide/releases/download/v0.0.9-alpha/zoxide-linux-x64.tar.gz
 tar xzf zoxide-linux-x64.tar.gz   # ./zoxide ./kernels/ ./scripts/
 ./scripts/pod-verify.sh ./zoxide ./kernels
 ```
