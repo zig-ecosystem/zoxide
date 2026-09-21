@@ -40,6 +40,7 @@ pub const Driver = struct {
     cuDeviceGetCount: *const fn (count: *c_int) callconv(.c) c_int,
     cuDeviceGet: *const fn (device: *CUdevice, ordinal: c_int) callconv(.c) c_int,
     cuDeviceGetName: *const fn (name: [*]u8, len: c_int, dev: CUdevice) callconv(.c) c_int,
+    cuDeviceGetAttribute: *const fn (pi: *c_int, attrib: c_int, dev: CUdevice) callconv(.c) c_int,
     cuCtxCreate_v2: *const fn (pctx: *CUcontext, flags: c_uint, dev: CUdevice) callconv(.c) c_int,
     cuCtxSetCurrent: *const fn (ctx: CUcontext) callconv(.c) c_int,
     cuModuleLoadData: *const fn (module: *CUmodule, image: ?*const anyopaque) callconv(.c) c_int,
@@ -151,6 +152,41 @@ pub const Context = struct {
         const n = @min(len, buf.len);
         @memcpy(buf[0..n], raw[0..n]);
         return buf[0..n];
+    }
+
+    /// `CUdevice_attribute` values we query. Only the ones that are exact and
+    /// stable are listed — notably *not* the clock/bus-width pair, since
+    /// deriving HBM bandwidth from them does not come out right for HBM's
+    /// pseudo-channel organisation and would just be a spec guess wearing a
+    /// measurement's clothes.
+    pub const Attr = enum(c_int) {
+        multiprocessor_count = 16,
+        l2_cache_size = 38,
+        max_shared_memory_per_multiprocessor = 81,
+    };
+
+    pub fn attr(self: *Context, a: Attr) Error!u64 {
+        var v: c_int = 0;
+        try self.drv.check(self.drv.cuDeviceGetAttribute(&v, @intFromEnum(a), self.dev));
+        return @intCast(@max(v, 0));
+    }
+
+    pub const Info = struct {
+        sms: u64,
+        l2_bytes: u64,
+        shared_per_sm: u64,
+    };
+
+    /// Device properties that matter for reading a bench result: how many SMs
+    /// the work spreads over, and how big L2 is — the latter decides whether a
+    /// given problem size still fits in cache, which is what separates a
+    /// bandwidth-bound measurement from a compute-bound one.
+    pub fn info(self: *Context) Error!Info {
+        return .{
+            .sms = try self.attr(.multiprocessor_count),
+            .l2_bytes = try self.attr(.l2_cache_size),
+            .shared_per_sm = try self.attr(.max_shared_memory_per_multiprocessor),
+        };
     }
 
     pub fn module(self: *Context, image: []const u8) Error!Module {

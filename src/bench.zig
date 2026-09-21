@@ -129,6 +129,14 @@ pub fn benchMain(
     };
     var name_buf: [128]u8 = undefined;
     try out.print("device: {s}\n", .{ctx.name(&name_buf)});
+    const dev_info: ?cu.Context.Info = ctx.info() catch null;
+    if (dev_info) |di| {
+        try out.print("  {d} SMs, {d:.0} MB L2, {d:.0} KB shared/SM\n", .{
+            di.sms,
+            @as(f64, @floatFromInt(di.l2_bytes)) / (1 << 20),
+            @as(f64, @floatFromInt(di.shared_per_sm)) / (1 << 10),
+        });
+    }
 
     const mod = ctx.module(cubin) catch {
         try out.print("error: cuModuleLoadData failed: {s}\n", .{drv.lastError()});
@@ -142,7 +150,7 @@ pub fn benchMain(
     };
 
     if (hgemm) {
-        return runHgemm(gpa, &ctx, func, n, args.iters, out, hgemm_tile_m, hgemm_tile_n);
+        return runHgemm(gpa, &ctx, func, n, args.iters, out, hgemm_tile_m, hgemm_tile_n, dev_info);
     }
 
     // Host buffers.
@@ -242,7 +250,7 @@ fn finishVerify(gpa: std.mem.Allocator, ctx: *cu.Context, dc: u64, a: []f32, b: 
 const h20_fp16_peak_gflops: f64 = 148000;
 
 /// HGEMM harness: f16 inputs (small ints, exact in f16), f32 accumulate.
-fn runHgemm(gpa: std.mem.Allocator, ctx: *cu.Context, func: cu.Function, n: usize, iters: u32, out: *std.Io.Writer, tile_m: usize, tile_n: usize) !u8 {
+fn runHgemm(gpa: std.mem.Allocator, ctx: *cu.Context, func: cu.Function, n: usize, iters: u32, out: *std.Io.Writer, tile_m: usize, tile_n: usize, dev_info: ?cu.Context.Info) !u8 {
     const elems = n * n;
     const ah = try gpa.alloc(f16, elems);
     defer gpa.free(ah);
@@ -306,6 +314,27 @@ fn runHgemm(gpa: std.mem.Allocator, ctx: *cu.Context, func: cu.Function, n: usiz
     try out.print("bench: hgemm(tile={d}x{d}) n={d} iters={d}\n", .{ tile_m, tile_n, n, iters });
     try out.print("best: {d:.3} ms over {d} iters\n", .{ best_ms, iters });
     try out.print("GFLOPS: {d:.1} ({d:.1}% of H20 FP16 tensor peak ~{d:.0} GFLOPS)\n", .{ gflops, gflops / h20_fp16_peak_gflops * 100, h20_fp16_peak_gflops });
+
+    // Global-traffic accounting, and whether the operands still fit in L2.
+    // Each block streams its whole tile-row of A and tile-column of B, so
+    // demand traffic is (n/tile_m)*(n/tile_n) blocks * (tile_m + tile_n) * n
+    // f16 elements. Comparing that against L2 is the cheap way to tell a
+    // bandwidth-bound result from a compute-bound one: once A and B fit in L2,
+    // repeat reads stop reaching DRAM, so if throughput jumps at smaller n the
+    // kernel was traffic-limited.
+    const blocks = ((n + tile_m - 1) / tile_m) * ((n + tile_n - 1) / tile_n);
+    const demand_bytes: f64 = @floatFromInt(blocks * (tile_m + tile_n) * n * 2);
+    const gbs = demand_bytes / (@as(f64, best_ms) * 1e-3) / 1e9;
+    try out.print("global reads: {d:.2} GB demand -> {d:.2} TB/s (L2 absorbs repeats; DRAM is lower)\n", .{ demand_bytes / 1e9, gbs / 1000 });
+    if (dev_info) |di| {
+        const operands_bytes: f64 = @floatFromInt(2 * n * n * 2); // A + B in f16
+        const l2: f64 = @floatFromInt(di.l2_bytes);
+        try out.print("A+B working set: {d:.0} MB vs {d:.0} MB L2 — {s}\n", .{
+            operands_bytes / (1 << 20),
+            l2 / (1 << 20),
+            if (operands_bytes <= l2) "fits, so repeat reads stay on chip" else "exceeds L2, repeat reads reach DRAM",
+        });
+    }
 
     const c = try gpa.alloc(f32, elems);
     defer gpa.free(c);
