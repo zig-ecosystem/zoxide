@@ -189,6 +189,97 @@ pub inline fn mmaAsyncM64N16K16(
     acc.* = .{ .d0 = d0, .d1 = d1, .d2 = d2, .d3 = d3, .d4 = d4, .d5 = d5, .d6 = d6, .d7 = d7 };
 }
 
+/// CUTLASS's `warpgroup_fence_operand`: an empty asm taking the value as a
+/// read-write operand, which forces the compiler to treat it as live here.
+///
+/// Needed because an in-flight `wgmma` reads its A and D registers *after* the
+/// instruction issues, but the register allocator has no idea. Once the last
+/// wgmma of a group has been emitted, LLVM considers that group's A fragment
+/// dead and is free to recycle the physical registers for the next stage's
+/// fragment — silently undoing any double buffering the source expresses. Doing
+/// this to both fragment buffers at the loop's end keeps them simultaneously
+/// live across the back edge, so they must land in disjoint registers.
+///
+/// The PTX ISA is ambiguous about whether `wgmma.fence` alone would legalise
+/// overwriting a fragment that an outstanding group is reading. This does not
+/// rely on that reading: the fragments are genuinely double-buffered, and this
+/// only stops the compiler from collapsing them back together.
+pub inline fn fenceFragment(frag: *[4]u32) void {
+    inline for (0..4) |i| {
+        var x = frag[i];
+        asm volatile (""
+            : [r] "+r" (x)
+            :
+            : .{});
+        frag[i] = x;
+    }
+}
+
+/// `wgmma.mma_async.sync.aligned.m64n16k16.f32.f16.f16` with **A supplied from
+/// registers** and only B read from shared memory.
+///
+/// This is the way out of the n16 operand-traffic penalty without a wider N.
+/// In the all-shared form each of the 8 wgmma covering a 128-wide tile re-reads
+/// the whole A tile, so one K-stage pulls 8*(2048+512) = 20480 B out of shared
+/// memory. Loading A once into registers instead leaves 2048 + 8*512 = 6144 B —
+/// exactly what a single `m64n128k16` would have read, and 3.3x less than the
+/// all-shared n16 form. The accumulator is still 8 registers, so this stays
+/// inside Zig's 15-output asm limit.
+///
+/// `a` is this thread's 4-register A fragment for the 64x16 tile, in CUTLASS
+/// `ALayout_64x16` order. With `m = warp*16 + lane/4` and `k0 = (lane%4)*2`
+/// that is:
+///   a[0] = A[m  ][k0, k0+1]    a[1] = A[m+8][k0,   k0+1]
+///   a[2] = A[m  ][k0+8, k0+9]  a[3] = A[m+8][k0+8, k0+9]
+/// which is the `mma.sync m16n8k16` A-fragment layout applied to each warp's
+/// own 16 rows — i.e. precisely what one `ldmatrix.x4` returns.
+///
+/// A is required to be K-major here; there is no `trans_a` operand because the
+/// fragment layout is fixed when A comes from registers.
+///
+/// Hazard note for pipelined callers: the async op reads `a` and `acc` after it
+/// issues, so neither may be overwritten while the group is still in flight.
+/// With `waitGroup(1)` the previous stage is still running, so a caller must
+/// alternate between two A fragment register sets.
+pub inline fn mmaAsyncM64N16K16Rs(
+    acc: *Acc64x16,
+    a: [4]u32,
+    desc_b: u64,
+    scale_d: bool,
+    comptime major_b: Major,
+) void {
+    var d0 = acc.d0;
+    var d1 = acc.d1;
+    var d2 = acc.d2;
+    var d3 = acc.d3;
+    var d4 = acc.d4;
+    var d5 = acc.d5;
+    var d6 = acc.d6;
+    var d7 = acc.d7;
+    asm volatile (
+        \\{
+        \\.reg .pred p;
+        \\setp.ne.b32 p, %[sd], 0;
+        \\wgmma.mma_async.sync.aligned.m64n16k16.f32.f16.f16 {%[d0],%[d1],%[d2],%[d3],%[d4],%[d5],%[d6],%[d7]}, {%[a0],%[a1],%[a2],%[a3]}, %[db], p, 1, 1,
+    ++ " " ++ decimal(@intFromEnum(major_b)) ++ ";\n}"
+        : [d0] "+f" (d0),
+          [d1] "+f" (d1),
+          [d2] "+f" (d2),
+          [d3] "+f" (d3),
+          [d4] "+f" (d4),
+          [d5] "+f" (d5),
+          [d6] "+f" (d6),
+          [d7] "+f" (d7),
+        : [a0] "r" (a[0]),
+          [a1] "r" (a[1]),
+          [a2] "r" (a[2]),
+          [a3] "r" (a[3]),
+          [db] "l" (desc_b),
+          [sd] "r" (@as(u32, @intFromBool(scale_d))),
+        : .{ .memory = true });
+    acc.* = .{ .d0 = d0, .d1 = d1, .d2 = d2, .d3 = d3, .d4 = d4, .d5 = d5, .d6 = d6, .d7 = d7 };
+}
+
 /// Comptime decimal rendering, for splicing immediates into asm templates.
 fn decimal(comptime n: u32) []const u8 {
     comptime {

@@ -63,7 +63,7 @@ if [ "$DEGRADED" = 1 ]; then
     done
     if have_ptx wgmma_smoke; then record SKIP "run/wgmma_smoke" "no GPU"; else record SKIP "run/wgmma_smoke" "PTX missing"; fi
     if have_ptx sgemm_swz; then record SKIP "bench/sgemm_swz" "no GPU"; else record SKIP "bench/sgemm_swz" "PTX missing"; fi
-    for k in hgemm_wgmma hgemm_wgmma2; do
+    for k in hgemm_wgmma hgemm_wgmma2 hgemm_wgmma3; do
         if have_ptx "$k"; then record SKIP "bench/$k" "no GPU"; else record SKIP "bench/$k" "PTX missing"; fi
     done
     if have_ptx intrinsics_smoke; then record SKIP "cubin/intrinsics_smoke" "no GPU/ptxas"; else record SKIP "cubin/intrinsics_smoke" "PTX missing"; fi
@@ -116,7 +116,7 @@ fi
 if [ "$QUICK" = 1 ]; then
     record SKIP "bench/hgemm_wgmma" "--quick"
 else
-    for k in hgemm_wgmma hgemm_wgmma2; do
+    for k in hgemm_wgmma hgemm_wgmma2 hgemm_wgmma3; do
         if ! have_ptx "$k"; then
             record SKIP "bench/$k" "PTX missing"
             continue
