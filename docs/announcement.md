@@ -6,6 +6,8 @@
 
 ## v0.0.7-alpha — warpgroup MMA, 54.3% of FP16 peak（2026-09-21）
 
+![hgemm progression](assets/hgemm-progression.svg)
+
 Hopper warpgroup MMA 落地：**80.3 TFLOPS（FP16 峰值 54.3%），结果精确，对 mma.sync 基线 1.49x**（53.8 TF / 36.4%）。
 
 wgmma 和 mma.sync 有两处本质不同。一是 **LLVM 没有 `wgmma.mma_async` intrinsic**——NVVM 只暴露 fence / commit_group / wait_group 三条控制指令，MMA 本身只能手写 inline asm，且门控在 `sm_90a` 而非 `sm_90`（此前记录的「生成器已含 wgmma wrapper」已订正）。二是操作数不是普通二维数组：tensor core 按 **128 字节连续的 8×8 core matrix** 读共享内存，tile 必须按 core matrix 序列打包，再用 64 位描述符（起始地址 + 两个跨 core matrix 字节步长）寻址。

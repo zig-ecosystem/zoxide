@@ -224,6 +224,8 @@ reg 15319 (34.8%) of the ~44 TFLOPS FP32 peak; reg verified at n=4000
   (`cp_async_wait_group` takes a comptime immediate — the NVVM intrinsic's
   runtime i32 form does not select).
   Measured on H20: 53.8 TFLOPS (36.4% of FP16 tensor peak), exact results.
+![HGEMM progression on H20](docs/assets/hgemm-progression.svg)
+
 - `hgemm_wgmma.zig`: Hopper warpgroup MMA. **80.3 TFLOPS (54.3% of FP16
   tensor peak) on H20, exact results** — 1.49x over `hgemm_mma2`. One
   warpgroup (128 threads) per block, 64x128 block tile, K-slice 16, cp.async
