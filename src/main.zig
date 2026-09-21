@@ -5,11 +5,19 @@ const gen_cmd = @import("gen.zig");
 
 /// Baseline GPU: NVIDIA H20 (Hopper, compute capability 9.0).
 const default_sm = "sm_90";
-const valid_arches = [_][]const u8{ "sm_75", "sm_80", "sm_86", "sm_89", "sm_90", "sm_100", "sm_120" };
+// `sm_90a` is the architecture-specific Hopper target: `wgmma.*` and the
+// TMA family are only available there (LLVM predicate `hasSM90a`, ptxas
+// `-arch sm_90a`). Such code is not forward-compatible with later
+// architectures, so it stays opt-in.
+const valid_arches = [_][]const u8{ "sm_75", "sm_80", "sm_86", "sm_89", "sm_90", "sm_90a", "sm_100", "sm_120" };
 
 fn validateArch(arch: []const u8) bool {
     if (!std.mem.startsWith(u8, arch, "sm_") or arch.len <= 3) return false;
-    for (arch[3..]) |c| if (!std.ascii.isDigit(c)) return false;
+    // Digits, optionally followed by a single architecture-specific suffix
+    // ('a' = arch-specific, 'f' = family-specific).
+    const body = if (arch[arch.len - 1] == 'a' or arch[arch.len - 1] == 'f') arch[3 .. arch.len - 1] else arch[3..];
+    if (body.len == 0) return false;
+    for (body) |c| if (!std.ascii.isDigit(c)) return false;
     for (valid_arches) |v| if (std.mem.eql(u8, arch, v)) return true;
     return false;
 }
@@ -63,7 +71,7 @@ fn usage() void {
         \\                                                       run an example kernel on the GPU and verify results
         \\  supported arch values: {s}
         \\
-    , .{ default_sm, default_sm, "sm_75 sm_80 sm_86 sm_89 sm_90 sm_100 sm_120" });
+    , .{ default_sm, default_sm, "sm_75 sm_80 sm_86 sm_89 sm_90 sm_90a sm_100 sm_120" });
 }
 
 const Parsed = struct { positional: []const u8, output: []const u8, arch: []const u8 };
@@ -99,7 +107,7 @@ fn cmdPtx(gpa: std.mem.Allocator, io: std.Io, args: []const [:0]const u8) !u8 {
         return 1;
     };
     if (!validateArch(parsed.arch)) {
-        std.debug.print("error: invalid arch '{s}'; expected one of: {s}\n", .{ parsed.arch, "sm_75 sm_80 sm_86 sm_89 sm_90 sm_100 sm_120" });
+        std.debug.print("error: invalid arch '{s}'; expected one of: {s}\n", .{ parsed.arch, "sm_75 sm_80 sm_86 sm_89 sm_90 sm_90a sm_100 sm_120" });
         return 1;
     }
     const emit_arg = try std.fmt.allocPrint(gpa, "-femit-asm={s}", .{parsed.output});
@@ -137,7 +145,7 @@ fn cmdCubin(gpa: std.mem.Allocator, io: std.Io, env: *std.process.Environ.Map, a
         return 1;
     };
     if (!validateArch(parsed.arch)) {
-        std.debug.print("error: invalid arch '{s}'; expected one of: {s}\n", .{ parsed.arch, "sm_75 sm_80 sm_86 sm_89 sm_90 sm_100 sm_120" });
+        std.debug.print("error: invalid arch '{s}'; expected one of: {s}\n", .{ parsed.arch, "sm_75 sm_80 sm_86 sm_89 sm_90 sm_90a sm_100 sm_120" });
         return 1;
     }
     const ptxas = findPtxas(gpa, io, env) orelse {
@@ -210,7 +218,7 @@ fn cmdRun(gpa: std.mem.Allocator, io: std.Io, env: *std.process.Environ.Map, arg
         } else if (std.mem.eql(u8, a, "--arch")) {
             const v = needValue(args, &i) orelse return usageErr("run: --arch requires a value");
             if (!validateArch(v)) {
-                std.debug.print("error: invalid arch '{s}'; expected one of: {s}\n", .{ v, "sm_75 sm_80 sm_86 sm_89 sm_90 sm_100 sm_120" });
+                std.debug.print("error: invalid arch '{s}'; expected one of: {s}\n", .{ v, "sm_75 sm_80 sm_86 sm_89 sm_90 sm_90a sm_100 sm_120" });
                 return 1;
             }
             ra.arch = v;
@@ -256,7 +264,7 @@ fn cmdBench(gpa: std.mem.Allocator, io: std.Io, env: *std.process.Environ.Map, a
             i += 1;
             if (i >= args.len) return usageErr("bench: --arch requires a value");
             if (!validateArch(args[i])) {
-                std.debug.print("error: invalid arch '{s}'; expected one of: {s}\n", .{ args[i], "sm_75 sm_80 sm_86 sm_89 sm_90 sm_100 sm_120" });
+                std.debug.print("error: invalid arch '{s}'; expected one of: {s}\n", .{ args[i], "sm_75 sm_80 sm_86 sm_89 sm_90 sm_90a sm_100 sm_120" });
                 return 1;
             }
             ba.arch = args[i];
@@ -301,7 +309,7 @@ fn cmdDoctor(gpa: std.mem.Allocator, io: std.Io, env: *std.process.Environ.Map, 
     }
     if (want_arch) |a| {
         if (!validateArch(a)) {
-            std.debug.print("error: invalid arch '{s}'; expected one of: {s}\n", .{ a, "sm_75 sm_80 sm_86 sm_89 sm_90 sm_100 sm_120" });
+            std.debug.print("error: invalid arch '{s}'; expected one of: {s}\n", .{ a, "sm_75 sm_80 sm_86 sm_89 sm_90 sm_90a sm_100 sm_120" });
             return 1;
         }
     }

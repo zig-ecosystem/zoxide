@@ -2,6 +2,12 @@ const std = @import("std");
 
 // Target GPU baseline: NVIDIA H20 (Hopper, CC 9.0).
 pub const default_sm_model = &std.Target.nvptx.cpu.sm_90;
+// Architecture-specific Hopper target. `wgmma.*` and the TMA/`tcgen` family are
+// gated on `hasSM90a` in LLVM's NVPTX backend, so kernels using them must be
+// built for sm_90a rather than plain sm_90. Code compiled for sm_90a is not
+// forward-compatible with later architectures (no PTX JIT to sm_100), which is
+// why it is opt-in per kernel instead of the project default.
+pub const sm_90a_model = &std.Target.nvptx.cpu.sm_90a;
 
 pub const CudaOptions = struct {
     sm: *const std.Target.Cpu.Model = default_sm_model,
@@ -94,30 +100,33 @@ pub fn build(b: *std.Build) void {
         .strip = true,
     });
 
-    const example_names = [_][]const u8{
-        "vector_add",
-        "shared_reverse",
-        "warp_reduce",
-        "atomic_counter",
-        "intrinsics_smoke",
-        "sgemm_naive",
-        "sgemm_tiled",
-        "sgemm_reg",
-        "sgemm_opt",
-        "sgemm_opt2",
-        "sgemm_swz",
-        "debug_print",
-        "asm_smoke",
-        "hgemm_mma",
-        "hgemm_mma2",
+    const Example = struct { name: []const u8, sm: *const std.Target.Cpu.Model = default_sm_model };
+    const examples = [_]Example{
+        .{ .name = "vector_add" },
+        .{ .name = "shared_reverse" },
+        .{ .name = "warp_reduce" },
+        .{ .name = "atomic_counter" },
+        .{ .name = "intrinsics_smoke" },
+        .{ .name = "sgemm_naive" },
+        .{ .name = "sgemm_tiled" },
+        .{ .name = "sgemm_reg" },
+        .{ .name = "sgemm_opt" },
+        .{ .name = "sgemm_opt2" },
+        .{ .name = "sgemm_swz" },
+        .{ .name = "debug_print" },
+        .{ .name = "asm_smoke" },
+        .{ .name = "hgemm_mma" },
+        .{ .name = "hgemm_mma2" },
+        .{ .name = "wgmma_smoke", .sm = sm_90a_model },
+        .{ .name = "hgemm_wgmma", .sm = sm_90a_model },
     };
 
     // `zig build kernels`: compile every kernel in src/examples/ to
-    // zig-out/kernels/<name>.ptx (sm_90).
+    // zig-out/kernels/<name>.ptx (sm_90 unless the entry overrides it).
     const kernels_step = b.step("kernels", "Compile all kernels in src/examples/ to PTX (zig-out/kernels/)");
-    for (example_names) |name| {
-        const source = b.path(b.fmt("src/examples/{s}.zig", .{name}));
-        kernels_step.dependOn(&addNvptxKernel(b, name, source, b.path("src/cuda.zig"), .{}).step);
+    for (examples) |ex| {
+        const source = b.path(b.fmt("src/examples/{s}.zig", .{ex.name}));
+        kernels_step.dependOn(&addNvptxKernel(b, ex.name, source, b.path("src/cuda.zig"), .{ .sm = ex.sm }).step);
     }
 
     // `zig build kernel`: single default kernel (kept for compatibility).

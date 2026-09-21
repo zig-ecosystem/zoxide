@@ -61,7 +61,9 @@ if [ "$DEGRADED" = 1 ]; then
     for ex in vector_add shared_reverse warp_reduce atomic_counter; do
         if have_ptx "$ex"; then record SKIP "run/$ex" "no GPU"; else record SKIP "run/$ex" "PTX missing"; fi
     done
+    if have_ptx wgmma_smoke; then record SKIP "run/wgmma_smoke" "no GPU"; else record SKIP "run/wgmma_smoke" "PTX missing"; fi
     if have_ptx sgemm_swz; then record SKIP "bench/sgemm_swz" "no GPU"; else record SKIP "bench/sgemm_swz" "PTX missing"; fi
+    if have_ptx hgemm_wgmma; then record SKIP "bench/hgemm_wgmma" "no GPU"; else record SKIP "bench/hgemm_wgmma" "PTX missing"; fi
     if have_ptx intrinsics_smoke; then record SKIP "cubin/intrinsics_smoke" "no GPU/ptxas"; else record SKIP "cubin/intrinsics_smoke" "PTX missing"; fi
 else
 # 2. functional examples
@@ -78,6 +80,22 @@ for ex in vector_add shared_reverse warp_reduce atomic_counter; do
     fi
 done
 
+# 2b. wgmma layout smoke. sm_90a-only, so a Hopper-specific failure here
+#     (ptxas rejecting the arch, or a non-Hopper GPU) is reported as SKIP
+#     rather than FAIL; a wrong *result* is a real FAIL.
+if ! have_ptx wgmma_smoke; then
+    record SKIP "run/wgmma_smoke" "PTX missing"
+else
+    out=$("$ZOXIDE" run "$PTXDIR/wgmma_smoke.ptx" --arch sm_90a 2>&1)
+    if echo "$out" | grep -q '^PASS'; then
+        record PASS "run/wgmma_smoke" "$(echo "$out" | grep -m1 '^PASS')"
+    elif echo "$out" | grep -qi 'failed to assemble\|not supported\|invalid arch'; then
+        record SKIP "run/wgmma_smoke" "sm_90a unavailable: $(echo "$out" | tail -1)"
+    else
+        record FAIL "run/wgmma_smoke" "$(echo "$out" | tail -1)"
+    fi
+fi
+
 # 3. bench smoke (small n, PASS check only) unless --quick
 if [ "$QUICK" = 1 ]; then
     record SKIP "bench/sgemm_swz" "--quick"
@@ -90,6 +108,22 @@ elif have_ptx sgemm_swz; then
     fi
 else
     record SKIP "bench/sgemm_swz" "PTX missing"
+fi
+
+# 3b. hgemm_wgmma bench (correctness + TFLOPS). Same sm_90a caveat.
+if [ "$QUICK" = 1 ]; then
+    record SKIP "bench/hgemm_wgmma" "--quick"
+elif have_ptx hgemm_wgmma; then
+    out=$("$ZOXIDE" bench "$PTXDIR/hgemm_wgmma.ptx" --n 4096 --iters 5 --arch sm_90a 2>&1)
+    if echo "$out" | grep -q '^PASS'; then
+        record PASS "bench/hgemm_wgmma" "$(echo "$out" | grep -m1 'GFLOPS')"
+    elif echo "$out" | grep -qi 'failed to assemble\|not supported\|invalid arch'; then
+        record SKIP "bench/hgemm_wgmma" "sm_90a unavailable: $(echo "$out" | tail -1)"
+    else
+        record FAIL "bench/hgemm_wgmma" "$(echo "$out" | tail -1)"
+    fi
+else
+    record SKIP "bench/hgemm_wgmma" "PTX missing"
 fi
 
 # 4. intrinsics_smoke assembles via ptxas (run inside `run` path is not

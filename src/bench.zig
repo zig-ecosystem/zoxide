@@ -47,15 +47,24 @@ pub fn benchMain(
     const swz = std.mem.eql(u8, stem, "sgemm_swz");
     const hgemm1 = std.mem.eql(u8, stem, "hgemm_mma");
     const hgemm2 = std.mem.eql(u8, stem, "hgemm_mma2");
-    const hgemm = hgemm1 or hgemm2;
-    const hgemm_tile: usize = if (hgemm2) 128 else 64;
+    const hgemm3 = std.mem.eql(u8, stem, "hgemm_wgmma");
+    const hgemm = hgemm1 or hgemm2 or hgemm3;
+    // Block tile (m, n). hgemm_wgmma uses one warpgroup over a 64x128 tile;
+    // the mma.sync kernels use square tiles.
+    const hgemm_tile_m: usize = if (hgemm3) 64 else if (hgemm2) 128 else 64;
+    const hgemm_tile_n: usize = if (hgemm3) 128 else hgemm_tile_m;
     if (!tiled and !naive and !reg and !opt and !opt2 and !swz and !hgemm) {
-        try out.print("error: bench supports sgemm_* or hgemm_mma inputs (got '{s}')\n", .{args.input});
+        try out.print("error: bench supports sgemm_*, hgemm_mma* or hgemm_wgmma inputs (got '{s}')\n", .{args.input});
         return 1;
     }
     const regblocked = reg or opt or opt2 or swz;
     if (hgemm and args.n % 16 != 0) {
         try out.print("error: hgemm_mma requires n % 16 == 0 (got {d})\n", .{args.n});
+        return 1;
+    }
+    // hgemm_wgmma tiles N by 128 and has no bounds guard in the epilogue.
+    if (hgemm3 and args.n % 128 != 0) {
+        try out.print("error: hgemm_wgmma requires n % 128 == 0 (got {d})\n", .{args.n});
         return 1;
     }
     const n = args.n;
@@ -87,7 +96,9 @@ pub fn benchMain(
     };
     defer gpa.free(cubin);
 
-    const kernel_name = args.kernel_name orelse if (hgemm2)
+    const kernel_name = args.kernel_name orelse if (hgemm3)
+        try std.fmt.allocPrint(gpa, "{s}_$_hgemmWgmma", .{stem})
+    else if (hgemm2)
         try std.fmt.allocPrint(gpa, "{s}_$_hgemmMma2", .{stem})
     else if (hgemm)
         try std.fmt.allocPrint(gpa, "{s}_$_hgemmMma", .{stem})
@@ -127,7 +138,7 @@ pub fn benchMain(
     };
 
     if (hgemm) {
-        return runHgemm(gpa, &ctx, func, n, args.iters, out, hgemm_tile);
+        return runHgemm(gpa, &ctx, func, n, args.iters, out, hgemm_tile_m, hgemm_tile_n);
     }
 
     // Host buffers.
@@ -227,7 +238,7 @@ fn finishVerify(gpa: std.mem.Allocator, ctx: *cu.Context, dc: u64, a: []f32, b: 
 const h20_fp16_peak_gflops: f64 = 148000;
 
 /// HGEMM harness: f16 inputs (small ints, exact in f16), f32 accumulate.
-fn runHgemm(gpa: std.mem.Allocator, ctx: *cu.Context, func: cu.Function, n: usize, iters: u32, out: *std.Io.Writer, tile: usize) !u8 {
+fn runHgemm(gpa: std.mem.Allocator, ctx: *cu.Context, func: cu.Function, n: usize, iters: u32, out: *std.Io.Writer, tile_m: usize, tile_n: usize) !u8 {
     const elems = n * n;
     const ah = try gpa.alloc(f16, elems);
     defer gpa.free(ah);
@@ -267,7 +278,9 @@ fn runHgemm(gpa: std.mem.Allocator, ctx: *cu.Context, func: cu.Function, n: usiz
     var arg_c = dc;
     var arg_n: u32 = @intCast(n);
     var params = [_]?*anyopaque{ &arg_a, &arg_b, &arg_c, &arg_n };
-    const grid: u32 = @intCast((n + tile - 1) / tile);
+    // grid.x walks N, grid.y walks M.
+    const grid_x: u32 = @intCast((n + tile_n - 1) / tile_n);
+    const grid_y: u32 = @intCast((n + tile_m - 1) / tile_m);
 
     const start = try ctx.eventCreate();
     defer start.destroy();
@@ -277,7 +290,7 @@ fn runHgemm(gpa: std.mem.Allocator, ctx: *cu.Context, func: cu.Function, n: usiz
     var it: u32 = 0;
     while (it < iters) : (it += 1) {
         try start.record();
-        try func.launch(grid, grid, 1, 128, 1, 1, &params);
+        try func.launch(grid_x, grid_y, 1, 128, 1, 1, &params);
         try stop.record();
         try stop.sync();
         const ms = try start.elapsedMs(stop);
@@ -286,7 +299,7 @@ fn runHgemm(gpa: std.mem.Allocator, ctx: *cu.Context, func: cu.Function, n: usiz
 
     const flops = 2.0 * @as(f64, @floatFromInt(n)) * @as(f64, @floatFromInt(n)) * @as(f64, @floatFromInt(n));
     const gflops = flops / (@as(f64, best_ms) * 1e6);
-    try out.print("bench: hgemm(tile={d}) n={d} iters={d}\n", .{ tile, n, iters });
+    try out.print("bench: hgemm(tile={d}x{d}) n={d} iters={d}\n", .{ tile_m, tile_n, n, iters });
     try out.print("best: {d:.3} ms over {d} iters\n", .{ best_ms, iters });
     try out.print("GFLOPS: {d:.1} ({d:.1}% of H20 FP16 tensor peak ~{d:.0} GFLOPS)\n", .{ gflops, gflops / h20_fp16_peak_gflops * 100, h20_fp16_peak_gflops });
 

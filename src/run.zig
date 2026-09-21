@@ -25,6 +25,8 @@ const examples = [_]Example{
     .{ .stem = "warp_reduce", .entry = "warpReduce", .default_block = 256 },
     .{ .stem = "atomic_counter", .entry = "atomicCounter", .default_block = 256 },
     .{ .stem = "debug_print", .entry = "debugPrint", .default_block = 32 },
+    // One warpgroup, fixed: wgmma is a warpgroup-wide instruction.
+    .{ .stem = "wgmma_smoke", .entry = "wgmmaSmoke", .default_block = 128 },
 };
 
 fn findExample(path: []const u8) ?Example {
@@ -46,7 +48,7 @@ pub fn run(
     out: *std.Io.Writer,
 ) !u8 {
     const ex = findExample(args.input) orelse {
-        try out.print("error: '{s}' does not look like a known example (vector_add/shared_reverse/warp_reduce/atomic_counter)\n", .{args.input});
+        try out.print("error: '{s}' does not look like a known example (vector_add/shared_reverse/warp_reduce/atomic_counter/debug_print/wgmma_smoke)\n", .{args.input});
         return 1;
     };
 
@@ -123,6 +125,8 @@ pub fn run(
         try runWarpReduce(gpa, &ctx, func, args, out)
     else if (std.mem.eql(u8, ex.stem, "debug_print"))
         try runDebugPrint(&ctx, func, out)
+    else if (std.mem.eql(u8, ex.stem, "wgmma_smoke"))
+        try runWgmmaSmoke(gpa, &ctx, func, out)
     else
         try runAtomicCounter(gpa, &ctx, func, args, out);
     return r;
@@ -304,6 +308,51 @@ fn runAtomicCounter(gpa: std.mem.Allocator, ctx: *cu.Context, func: cu.Function,
     }
     if (bad > 0) return fail(out, "atomic_counter: count={d} (want {d}), fsum={d}, hist={any}", .{ zero32, total, zero_f, hist_zeros });
     try out.print("PASS: atomic_counter count={d} fsum={d}\n", .{ zero32, zero_f });
+    return 0;
+}
+
+/// wgmma_smoke checks itself on the device and reports a per-thread mismatch
+/// count, so the host side is just "launch one warpgroup, expect all zeros".
+fn runWgmmaSmoke(gpa: std.mem.Allocator, ctx: *cu.Context, func: cu.Function, out: *std.Io.Writer) !u8 {
+    const threads = 128;
+    try out.print("wgmma_smoke: 1 block x {d} threads (sm_90a, m64n16k16)\n", .{threads});
+
+    const counts = try gpa.alloc(u32, threads);
+    defer gpa.free(counts);
+    @memset(counts, 0xffffffff);
+    const dump = try gpa.alloc(f32, threads * 16);
+    defer gpa.free(dump);
+    @memset(dump, 0);
+
+    const dcounts = try ctx.alloc(threads * @sizeOf(u32));
+    defer ctx.free(dcounts);
+    const ddump = try ctx.alloc(threads * 16 * @sizeOf(f32));
+    defer ctx.free(ddump);
+    try ctx.copyHtoD(dcounts, std.mem.sliceAsBytes(counts));
+    try ctx.copyHtoD(ddump, std.mem.sliceAsBytes(dump));
+
+    var arg_counts = dcounts;
+    var arg_dump = ddump;
+    var params = [_]?*anyopaque{ &arg_counts, &arg_dump };
+    try func.launch(1, 1, 1, threads, 1, 1, &params);
+    try ctx.synchronize();
+
+    try ctx.copyDtoH(std.mem.sliceAsBytes(counts), dcounts);
+    try ctx.copyDtoH(std.mem.sliceAsBytes(dump), ddump);
+
+    var bad: u32 = 0;
+    var first_bad: usize = 0;
+    for (counts, 0..) |v, i| {
+        if (v != 0) {
+            if (bad == 0) first_bad = i;
+            bad += v;
+        }
+    }
+    if (bad != 0) {
+        const t = first_bad;
+        return fail(out, "wgmma_smoke: {d} mismatched accumulator elements; first bad thread {d}, got/expect pairs {any}", .{ bad, t, dump[t * 16 ..][0..16] });
+    }
+    try out.print("PASS: wgmma_smoke 1024 accumulator elements exact (descriptor + core-matrix packing + CLayout mapping)\n", .{});
     return 0;
 }
 
