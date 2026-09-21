@@ -109,6 +109,7 @@ pub fn build(b: *std.Build) void {
         "debug_print",
         "asm_smoke",
         "hgemm_mma",
+        "hgemm_mma2",
     };
 
     // `zig build kernels`: compile every kernel in src/examples/ to

@@ -79,6 +79,14 @@ jobs:
           test "$(grep -c 'mma\.sync\.aligned\.m16n8k16' hgemm_mma.ptx)" -eq 8
           if grep -qE '\$[0-9]|%\[' hgemm_mma.ptx; then echo "hgemm_mma: unsubstituted operand"; exit 1; fi
           test "$(grep -c 'bar\.sync' hgemm_mma.ptx)" -eq 2
+          # hgemm_mma2: ldmatrix + cp.async + mma all present
+          grep -q 'ldmatrix\.sync\.aligned\.m8n8\.x4' hgemm_mma2.ptx
+          grep -q 'ldmatrix\.sync\.aligned\.m8n8\.x2\.trans' hgemm_mma2.ptx
+          grep -q 'cp\.async\.cg\.shared\.global' hgemm_mma2.ptx
+          grep -q 'cp\.async\.wait_group' hgemm_mma2.ptx
+          test "$(grep -c 'mma\.sync\.aligned\.m16n8k16' hgemm_mma2.ptx)" -eq 64
+          if grep -qE '\$[0-9]|%\[' hgemm_mma2.ptx; then echo "hgemm_mma2: unsubstituted operand"; exit 1; fi
+          test "$(grep -c 'bar\.sync' hgemm_mma2.ptx)" -eq 2
           echo "PTX invariants OK"
 
       - name: pod-verify degraded mode (no GPU runner)

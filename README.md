@@ -181,6 +181,7 @@ SGEMM (C = A·B, square f32) harness with CUDA event timing:
 ./zoxide bench sgemm_opt2.ptx --n 4096 --iters 10
 ./zoxide bench sgemm_swz.ptx  --n 4096 --iters 10
 ./zoxide bench hgemm_mma.ptx  --n 4096 --iters 10   # fp16 tensor core (mma.sync m16n8k16)
+./zoxide bench hgemm_mma2.ptx --n 4096 --iters 10   # + ldmatrix, 128x128 tile, cp.async double buffer
 ```
 
 - `sgemm_naive.zig`: one thread per C element, direct global loads (baseline).
@@ -216,7 +217,11 @@ reg 15319 (34.8%) of the ~44 TFLOPS FP32 peak; reg verified at n=4000
   K-slice 16, f32 accumulators. Requires N % 16 == 0 (bench enforces).
   Fragment mapping follows the PTX ISA doc (derived in the kernel comments);
   B is stored transposed in shared so b-fragment pairs load as one u32.
-  Reported against the ~148 TFLOPS FP16 tensor peak.
+  Measured on H20: 36.8 TFLOPS (24.9% of the ~148 TFLOPS FP16 tensor peak).
+- `hgemm_mma2.zig`: + ldmatrix.x4/x2.trans fragment loads, 128x128 block
+  tile (warp tile 64x64 = 4x8 mma), cp.async.cg 16B double-buffered pipeline
+  (`cp_async_wait_group` takes a comptime immediate — the NVVM intrinsic's
+  runtime i32 form does not select).
 
 If the pod has Nsight Compute, profile with:
 

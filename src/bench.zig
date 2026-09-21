@@ -45,7 +45,10 @@ pub fn benchMain(
     const opt = std.mem.eql(u8, stem, "sgemm_opt");
     const opt2 = std.mem.eql(u8, stem, "sgemm_opt2");
     const swz = std.mem.eql(u8, stem, "sgemm_swz");
-    const hgemm = std.mem.eql(u8, stem, "hgemm_mma");
+    const hgemm1 = std.mem.eql(u8, stem, "hgemm_mma");
+    const hgemm2 = std.mem.eql(u8, stem, "hgemm_mma2");
+    const hgemm = hgemm1 or hgemm2;
+    const hgemm_tile: usize = if (hgemm2) 128 else 64;
     if (!tiled and !naive and !reg and !opt and !opt2 and !swz and !hgemm) {
         try out.print("error: bench supports sgemm_* or hgemm_mma inputs (got '{s}')\n", .{args.input});
         return 1;
@@ -84,7 +87,9 @@ pub fn benchMain(
     };
     defer gpa.free(cubin);
 
-    const kernel_name = args.kernel_name orelse if (hgemm)
+    const kernel_name = args.kernel_name orelse if (hgemm2)
+        try std.fmt.allocPrint(gpa, "{s}_$_hgemmMma2", .{stem})
+    else if (hgemm)
         try std.fmt.allocPrint(gpa, "{s}_$_hgemmMma", .{stem})
     else
         try std.fmt.allocPrint(gpa, "{s}_$_sgemm{s}", .{ stem, if (tiled) "Tiled" else if (reg) "Reg" else if (opt) "Opt" else if (opt2) "Opt2" else if (swz) "Swz" else "Naive" });
@@ -122,7 +127,7 @@ pub fn benchMain(
     };
 
     if (hgemm) {
-        return runHgemm(gpa, &ctx, func, n, args.iters, out);
+        return runHgemm(gpa, &ctx, func, n, args.iters, out, hgemm_tile);
     }
 
     // Host buffers.
@@ -222,7 +227,7 @@ fn finishVerify(gpa: std.mem.Allocator, ctx: *cu.Context, dc: u64, a: []f32, b: 
 const h20_fp16_peak_gflops: f64 = 148000;
 
 /// HGEMM harness: f16 inputs (small ints, exact in f16), f32 accumulate.
-fn runHgemm(gpa: std.mem.Allocator, ctx: *cu.Context, func: cu.Function, n: usize, iters: u32, out: *std.Io.Writer) !u8 {
+fn runHgemm(gpa: std.mem.Allocator, ctx: *cu.Context, func: cu.Function, n: usize, iters: u32, out: *std.Io.Writer, tile: usize) !u8 {
     const elems = n * n;
     const ah = try gpa.alloc(f16, elems);
     defer gpa.free(ah);
@@ -262,7 +267,7 @@ fn runHgemm(gpa: std.mem.Allocator, ctx: *cu.Context, func: cu.Function, n: usiz
     var arg_c = dc;
     var arg_n: u32 = @intCast(n);
     var params = [_]?*anyopaque{ &arg_a, &arg_b, &arg_c, &arg_n };
-    const grid: u32 = @intCast((n + 63) / 64);
+    const grid: u32 = @intCast((n + tile - 1) / tile);
 
     const start = try ctx.eventCreate();
     defer start.destroy();
@@ -281,7 +286,7 @@ fn runHgemm(gpa: std.mem.Allocator, ctx: *cu.Context, func: cu.Function, n: usiz
 
     const flops = 2.0 * @as(f64, @floatFromInt(n)) * @as(f64, @floatFromInt(n)) * @as(f64, @floatFromInt(n));
     const gflops = flops / (@as(f64, best_ms) * 1e6);
-    try out.print("bench: hgemm_mma n={d} iters={d}\n", .{ n, iters });
+    try out.print("bench: hgemm(tile={d}) n={d} iters={d}\n", .{ tile, n, iters });
     try out.print("best: {d:.3} ms over {d} iters\n", .{ best_ms, iters });
     try out.print("GFLOPS: {d:.1} ({d:.1}% of H20 FP16 tensor peak ~{d:.0} GFLOPS)\n", .{ gflops, gflops / h20_fp16_peak_gflops * 100, h20_fp16_peak_gflops });
 
