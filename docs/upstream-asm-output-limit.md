@@ -86,11 +86,32 @@ out of reach at 32; lifting that too would additionally require widening
 | `hgemm_wgmma` | `wgmma.mma_async m64n16k16` | 80308 | 54.3% |
 
 So even the narrowest wgmma shape — the only one Zig can express — is worth
-1.49x over a tuned `mma.sync` kernel, at exact results. That is the floor, not
-the ceiling: the n16 tiling re-reads the A tile from shared memory 8x per
-K-stage. What `m64n64k16` would add is not yet measured, and measuring it is
-exactly what this cap prevents. Quantifying it requires a patched compiler,
-which makes the patch its own prerequisite.
+1.49x over a tuned `mma.sync` kernel, at exact results. A 3-stage pipeline then
+took it to 86284 GFLOPS (58.3%), 1.60x over the baseline.
+
+### The cap is now the leading suspect for the remaining gap
+
+58.3% leaves 41.7pp on the table, and three of the four candidate causes have
+been eliminated by experiment on H20 (details in `docs/verification/`):
+
+| hypothesis | status |
+| --- | --- |
+| pipeline draining the tensor core | eliminated — fixing it was worth 4pp |
+| global traffic / DRAM bandwidth | eliminated — throughput is flat across the L2 boundary (57.9% at 36 MB working set, 58.3% at 64 MB, 57.8% at 256 MB) |
+| too few independent warpgroups | eliminated — 12 blocks resident per SM is 12 independent wgmma streams, 75% thread occupancy |
+| **per-instruction efficiency of n16** | **the only candidate left** |
+
+Note also that the 3.3x operand-traffic penalty is *invariant to tile shape*:
+widening M or N changes how many blocks run, not how many times each wgmma
+re-reads its A tile. Only a wider N **per instruction** changes it. So with the
+cap in place there is nothing left to tune at the tiling level — which is a
+concrete, measured statement that a compiler limit, not the hardware and not the
+kernel, is what bounds Zig on this workload.
+
+This also resolves a circularity I previously flagged. Quantifying the cap's cost
+needs `m64n64k16`, which needs the patch, which I had wanted the cost figure to
+justify. The elimination above justifies the patch on its own: it is now both the
+measuring instrument and the likely fix.
 
 ## Proposed change
 
