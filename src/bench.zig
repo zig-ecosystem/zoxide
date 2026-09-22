@@ -60,7 +60,8 @@ pub fn benchMain(
     const hgemm3 = std.mem.eql(u8, stem, "hgemm_wgmma");
     const hgemm4 = std.mem.eql(u8, stem, "hgemm_wgmma2");
     const hgemm5 = std.mem.eql(u8, stem, "hgemm_wgmma3");
-    const wgmma = hgemm3 or hgemm4 or hgemm5;
+    const hgemm6 = std.mem.eql(u8, stem, "hgemm_wgmma4");
+    const wgmma = hgemm3 or hgemm4 or hgemm5 or hgemm6;
     const hgemm = hgemm1 or hgemm2 or wgmma;
     // Block tile (m, n). hgemm_wgmma uses one warpgroup over a 64x128 tile;
     // the mma.sync kernels use square tiles.
@@ -114,7 +115,9 @@ pub fn benchMain(
     };
     defer gpa.free(cubin);
 
-    const kernel_name = args.kernel_name orelse if (hgemm5)
+    const kernel_name = args.kernel_name orelse if (hgemm6)
+        try std.fmt.allocPrint(gpa, "{s}_$_hgemmWgmma4", .{stem})
+    else if (hgemm5)
         try std.fmt.allocPrint(gpa, "{s}_$_hgemmWgmma3", .{stem})
     else if (hgemm4)
         try std.fmt.allocPrint(gpa, "{s}_$_hgemmWgmma2", .{stem})

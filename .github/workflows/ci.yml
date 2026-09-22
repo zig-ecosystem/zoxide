@@ -125,6 +125,24 @@ jobs:
           for f in hgemm_mma hgemm_mma2 hgemm_wgmma hgemm_wgmma2 hgemm_wgmma3; do
             grep -q '\.param \.u64 \.ptr' "$f.ptx" || { echo "$f: expected pointer params"; exit 1; }
           done
+          # hgemm_wgmma4 sidesteps the 15-output asm limit by keeping the
+          # accumulator in PTX registers LLVM cannot see. Two conditions make that
+          # safe, and both are invisible in the source:
+          #   the .reg declaration must appear exactly once, or ptxas rejects the
+          #   redefinition;
+          #   the wgmma must carry no output operands, which is what removes the
+          #   limit in the first place.
+          test "$(grep -c 'reg \.f32 %zacc' hgemm_wgmma4.ptx)" -eq 1
+          grep -q 'm64n128k16' hgemm_wgmma4.ptx
+          test "$(grep -c 'mov\.f32 %r[0-9]*, %zacc' hgemm_wgmma4.ptx)" -eq 64
+          if grep -q 'st\.local' hgemm_wgmma4.ptx; then
+            echo "hgemm_wgmma4 spilled"; exit 1
+          fi
+          # The declaration has to precede every use; asm volatile keeps its order,
+          # but assert it rather than trust it.
+          decl=$(grep -n 'reg \.f32 %zacc' hgemm_wgmma4.ptx | head -1 | cut -d: -f1)
+          first_use=$(grep -n '%zacc0' hgemm_wgmma4.ptx | head -1 | cut -d: -f1)
+          [ "$decl" -le "$first_use" ] || { echo "hgemm_wgmma4: %zacc used before declaration"; exit 1; }
           echo "PTX invariants OK"
 
       - name: pod-verify degraded mode (no GPU runner)

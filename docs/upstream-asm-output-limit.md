@@ -63,10 +63,68 @@ operand. `m64nNk16` needs `N/2` registers per thread:
 | `m64n64k16` | 32 | no |
 | `m64n128k16` | 64 | no |
 
-There is no way around it by splitting the asm: one `wgmma` instruction needs
-its whole accumulator in a single operand list. And there is no intrinsic to
-fall back on — NVVM exposes only `wgmma.fence`, `wgmma.commit_group` and
-`wgmma.wait_group`, never the MMA itself, so inline asm is the only path.
+> **Correction (2026-09-22).** An earlier version of this document said there was
+> no way around the limit. That was wrong, and the workaround makes the cap a
+> nuisance rather than a blocker. See "There is a way around it" below. The
+> analysis of *why* the limit is 15 stands; the conclusion that it prevents
+> wide-N wgmma does not.
+
+Splitting the asm does not help: one `wgmma` instruction needs its whole
+accumulator in a single operand list. And there is no intrinsic to fall back on —
+NVVM exposes only `wgmma.fence`, `wgmma.commit_group` and `wgmma.wait_group`,
+never the MMA itself, so inline asm is the only path.
+
+## There is a way around it
+
+The limit applies to *operands*, and the accumulator does not have to be one.
+
+PTX register declarations are function-scoped, and LLVM splices inline asm into
+the function body verbatim, so a `.reg` declaration in one asm statement is
+visible to every later statement in the same function:
+
+```zig
+asm volatile (".reg .f32 %zacc<64>;");                   // once, unconditionally
+asm volatile ("wgmma...m64n128k16... {%zacc0,...,%zacc63}, %[da], %[db], p, 1, 1, 0, 1;"
+    : : [da] "l" (desc_a), [db] "l" (desc_b), [sd] "r" (sd) : ...);  // zero outputs
+asm volatile ("mov.f32 %[o], %zacc7;" : [o] "=f" (v));   // one output, 64 times
+```
+
+The accumulator lives in registers LLVM does not know about, never appears in an
+operand list, and the limit does not apply. `m64n128k16` — 64 accumulators, the
+shape CUTLASS uses — becomes expressible on stock Zig, as does anything wider.
+`src/examples/hgemm_wgmma4.zig` does exactly this.
+
+Verified in the generated PTX: the declaration appears once, the instruction
+carries 64 registers and no output operands, and the epilogue reads them back
+with 64 single-output `mov`s.
+
+### What it costs
+
+LLVM cannot see these registers, so it cannot account for them. It allocates its
+own as though the 64 f32 were absent, and ptxas has to fit both. If the total
+exceeds what the SM can provide, ptxas spills — and on this hardware spilling is
+measured at 0.55x throughput for 16 registers and 0.93x for a single byte, so that
+failure mode is severe rather than marginal.
+
+Two conditions are load-bearing and neither is visible in the source, so CI
+asserts both against the generated PTX:
+
+  * the `.reg` declaration must appear exactly once, or ptxas rejects the
+    redefinition — which means the statement carrying it must never be duplicated
+    by unrolling or branch cloning;
+  * it must precede every use.
+
+### What this does to the case for raising the limit
+
+It weakens it, honestly. The cap no longer blocks wide-N wgmma; it forces a
+workaround that gives up LLVM's register accounting. That is still worth fixing —
+a language should not require hiding state from its own compiler to express a
+hardware instruction — but it is a wart, not a wall, and this document previously
+overstated it.
+
+It also removes the circularity that justified building a patched compiler.
+Measuring what narrow N costs no longer needs one: `hgemm_wgmma4` is that
+measurement.
 
 So `src/examples/hgemm_wgmma.zig` is stuck on `m64n16k16` and has to tile it 8x
 to cover a 128-wide N. That re-reads the A tile from shared memory 8 times per
