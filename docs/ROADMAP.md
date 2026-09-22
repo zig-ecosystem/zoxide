@@ -16,6 +16,8 @@
 | v0.0.7-alpha | Hopper warpgroup MMA：hgemm_wgmma 80.3 TF / 54.3% 峰值，结果精确，1.49x |
 | v0.0.8-alpha | wgmma 三级流水：hgemm_wgmma2 86.3 TF / 58.3% 峰值，结果精确，累计 1.60x |
 | v0.0.9-alpha | wgmma RS（A 进寄存器）：hgemm_wgmma3 95.2 TF / 64.3% 峰值，结果精确，累计 1.77x |
+| v0.0.10-alpha | Host API：类型化 launch、stream、pinned、设备侧 memset、occupancy 查询 |
+| v0.0.11-alpha | `zoxide new` 脚手架；hgemm 签名改 f16；host API 真机验证全通 |
 
 ## 规划
 
@@ -24,7 +26,9 @@
 目标：让"改代码 → 验证"成为一键动作，降低外部贡献门槛。
 
 - [x] **pod 端到端回归脚本**（M4b）：`scripts/pod-verify.sh`——doctor + 全部示例 run PASS + bench 冒烟，输出结构化报告（JUnit 或纯文本表格），失败定位到具体 kernel；README 附 k8s Job yaml 示例
-- [ ] **CI GPU 扩展**：支持 self-hosted GPU runner 时自动跑 pod-verify（workflow 里 `runs-on: [self-hosted, gpu]` 的可选 job，无 runner 时跳过）
+- [ ] **CI GPU 扩展**：支持 self-hosted GPU runner 时自动跑 pod-verify（workflow 里 `runs-on: [self-hosted, gpu]` 的可选 job，无 runner 时跳过）。
+  本轮的教训给这条加了权重：`tests/downstream` 的符号不匹配在无 GPU 的机器上**完全测不出来**，
+  只有真正启动一次 kernel 才会暴露，而它活了两个提交
 - [x] **gpu_printf**：`cuda.printf(comptime fmt, args)`——注意 `llvm.nvvm.vprintf` 已被 LLVM 移除，正确路径是调用字面名为 `vprintf` 的函数；valist 为 8 字节小端 slot 打包
 - [ ] `zoxide ptx` 支持 examples 风格的多文件/模块输入（当前只支持单文件）
 
@@ -93,7 +97,8 @@ f16/f16x2/bf16/bf16x2 wrapper 仍有价值——它们覆盖 `ftz`/`nan`/`xorsig
 ### v0.0.5 — 类型化启动与单文件体验
 
 - [ ] `@embedFile` cubin + comptime 生成类型化 launch（对标 cuda-oxide `#[cuda_module]`）：kernel 参数在编译期检查类型/数量
-- [ ] host+device 同文件/同包的标准项目模板（`zoxide new` scaffold）
+- [x] host+device 同包的标准项目模板（`zoxide new`）—— 生成的包与 `tests/downstream` 同构，
+  fingerprint 从编译器的错误消息取回；CI 断言生成物的 PTX 入口点 == host 查找的符号
 - [ ] launch 参数校验（block/grid vs device 限制）
 
 ### v1.0.0 — 稳定化
