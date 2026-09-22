@@ -100,7 +100,10 @@ f16/f16x2/bf16/bf16x2 wrapper 仍有价值——它们覆盖 `ftz`/`nan`/`xorsig
 - [ ] `@embedFile` cubin + comptime 生成类型化 launch（对标 cuda-oxide `#[cuda_module]`）：kernel 参数在编译期检查类型/数量
 - [x] host+device 同包的标准项目模板（`zoxide new`）—— 生成的包与 `tests/downstream` 同构，
   fingerprint 从编译器的错误消息取回；CI 断言生成物的 PTX 入口点 == host 查找的符号
-- [ ] launch 参数校验（block/grid vs device 限制）
+- [x] launch 参数校验（block/grid vs device 限制）—— 启动前用缓存的设备限制做纯算术校验，
+  消息点明维度与上限；最有价值的一条是「设备允许但本 kernel 不允许」（寄存器压低了上限，
+  源码里毫无线索）。另把高价值 CUresult 映射为独立错误（ArchMismatch / InvalidPtx /
+  LaunchOutOfResources / IllegalAddress / CudaOutOfMemory），因为 `try` 会丢掉 lastError()
 
 ### v1.0.0 — 稳定化
 

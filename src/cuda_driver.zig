@@ -34,13 +34,55 @@ pub const cuda_error_not_ready: c_int = 600;
 /// instead produces exactly this.
 pub const cuda_error_not_found: c_int = 500;
 
+/// The `CUresult` codes worth distinguishing. Everything else collapses to
+/// `CudaCall` with the driver's own text in `lastError()`.
+///
+/// The motivation is that `try` discards the message. A caller who writes
+/// `try ctx.module(bytes)` and gets `error.CudaCall` has learned nothing, and the
+/// most common causes each have a specific fix — a cubin built for the wrong
+/// architecture, PTX the driver will not accept, a launch geometry the kernel's
+/// register use cannot support. Those deserve names.
+const CuResult = struct {
+    const invalid_value = 1;
+    const out_of_memory = 2;
+    const no_binary_for_gpu = 209;
+    const invalid_ptx = 218;
+    const not_found = 500;
+    const not_ready = 600;
+    const illegal_address = 700;
+    const launch_out_of_resources = 701;
+    const launch_timeout = 702;
+    const launch_failed = 719;
+};
+
 pub const Error = error{
     CudaInit,
+    /// Any driver failure without a more specific mapping. The driver's message
+    /// is in `lastError()`.
     CudaCall,
     LibraryNotFound,
     SymbolMissing,
     /// A module does not export the requested kernel name.
     KernelNotFound,
+    /// The device is out of memory.
+    CudaOutOfMemory,
+    /// The cubin contains no code for this GPU — usually built for another `sm_`.
+    ArchMismatch,
+    /// The driver rejected the PTX. Often an instruction the target does not
+    /// support, such as `wgmma` without `sm_90a`.
+    InvalidPtx,
+    /// A kernel dereferenced memory it does not own. Asynchronous, so it usually
+    /// surfaces at the next synchronisation rather than at the offending launch.
+    IllegalAddress,
+    /// The launch needs more registers, shared memory or threads per block than
+    /// the device can provide for this kernel.
+    LaunchOutOfResources,
+    LaunchTimeout,
+    LaunchFailed,
+    InvalidValue,
+    /// Launch geometry rejected before reaching the driver, with a description in
+    /// `lastError()`.
+    InvalidLaunchGeometry,
 };
 
 pub const Driver = struct {
@@ -146,7 +188,26 @@ pub const Driver = struct {
         const msg = std.fmt.bufPrint(&self.err_buf, "CUDA error {d} ({s}): {s}", .{ res, name, str }) catch
             "CUDA error (message truncated)";
         self.err_len = msg.len;
-        return error.CudaCall;
+        return switch (res) {
+            CuResult.out_of_memory => error.CudaOutOfMemory,
+            CuResult.no_binary_for_gpu => error.ArchMismatch,
+            CuResult.invalid_ptx => error.InvalidPtx,
+            CuResult.not_found => error.KernelNotFound,
+            CuResult.illegal_address => error.IllegalAddress,
+            CuResult.launch_out_of_resources => error.LaunchOutOfResources,
+            CuResult.launch_timeout => error.LaunchTimeout,
+            CuResult.launch_failed => error.LaunchFailed,
+            CuResult.invalid_value => error.InvalidValue,
+            else => error.CudaCall,
+        };
+    }
+
+    /// Record a message for `lastError()` from a check this layer performed
+    /// itself, so caller-side diagnostics read the same way as driver ones.
+    pub fn setError(self: *Driver, msg: []const u8) void {
+        const n = @min(msg.len, self.err_buf.len);
+        @memcpy(self.err_buf[0..n], msg[0..n]);
+        self.err_len = n;
     }
 
     pub fn lastError(self: *const Driver) []const u8 {
@@ -191,6 +252,14 @@ pub const Context = struct {
     /// pseudo-channel organisation and would just be a spec guess wearing a
     /// measurement's clothes.
     pub const Attr = enum(c_int) {
+        max_threads_per_block = 1,
+        max_block_dim_x = 2,
+        max_block_dim_y = 3,
+        max_block_dim_z = 4,
+        max_grid_dim_x = 5,
+        max_grid_dim_y = 6,
+        max_grid_dim_z = 7,
+        max_shared_memory_per_block = 8,
         multiprocessor_count = 16,
         l2_cache_size = 38,
         max_shared_memory_per_multiprocessor = 81,

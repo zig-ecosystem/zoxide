@@ -147,11 +147,57 @@ fn isSlice(comptime S: type) bool {
         S == Slice(S.Elem);
 }
 
+/// Device launch limits, read once at context creation.
+///
+/// Cached rather than queried per launch: validating geometry is then pure
+/// arithmetic, so a benchmark loop issuing thousands of launches pays nothing.
+pub const Limits = struct {
+    max_threads_per_block: u32,
+    max_block: [3]u32,
+    max_grid: [3]u32,
+    max_shared_per_block: u64,
+
+    /// Permissive fallback when the attributes cannot be read, so a query
+    /// failure degrades to the previous behaviour (the driver rejects it) rather
+    /// than to spurious rejections here.
+    pub const unknown: Limits = .{
+        .max_threads_per_block = std.math.maxInt(u32),
+        .max_block = @splat(std.math.maxInt(u32)),
+        .max_grid = @splat(std.math.maxInt(u32)),
+        .max_shared_per_block = std.math.maxInt(u64),
+    };
+};
+
 pub const Context = struct {
     inner: cu.Context,
+    limits: Limits,
 
     pub fn init(drv: *Driver) Error!Context {
-        return .{ .inner = try cu.Context.init(drv) };
+        var inner = try cu.Context.init(drv);
+        return .{ .inner = inner, .limits = readLimits(&inner) };
+    }
+
+    fn readLimits(inner: *cu.Context) Limits {
+        const q = struct {
+            fn get(c: *cu.Context, a: cu.Context.Attr, fallback: u64) u64 {
+                return c.attr(a) catch fallback;
+            }
+        }.get;
+        const max = std.math.maxInt(u32);
+        return .{
+            .max_threads_per_block = @intCast(q(inner, .max_threads_per_block, max)),
+            .max_block = .{
+                @intCast(q(inner, .max_block_dim_x, max)),
+                @intCast(q(inner, .max_block_dim_y, max)),
+                @intCast(q(inner, .max_block_dim_z, max)),
+            },
+            .max_grid = .{
+                @intCast(q(inner, .max_grid_dim_x, max)),
+                @intCast(q(inner, .max_grid_dim_y, max)),
+                @intCast(q(inner, .max_grid_dim_z, max)),
+            },
+            .max_shared_per_block = q(inner, .max_shared_memory_per_block, std.math.maxInt(u64)),
+        };
     }
 
     pub fn name(self: *Context, buf: []u8) []const u8 {
@@ -231,7 +277,7 @@ pub const Context = struct {
 
     /// Load a module from cubin bytes.
     pub fn module(self: *Context, image: []const u8) Error!Module {
-        return .{ .inner = try self.inner.module(image) };
+        return .{ .inner = try self.inner.module(image), .limits = self.limits };
     }
 
     /// Load a module from PTX text, letting the driver JIT it.
@@ -245,7 +291,7 @@ pub const Context = struct {
     ///
     /// Must be NUL-terminated, which is what `@embedFile` yields.
     pub fn moduleFromPtx(self: *Context, ptx: [:0]const u8) Error!Module {
-        return .{ .inner = try self.inner.module(ptx.ptr[0 .. ptx.len + 1]) };
+        return .{ .inner = try self.inner.module(ptx.ptr[0 .. ptx.len + 1]), .limits = self.limits };
     }
 
     pub fn allocSlice(self: *Context, comptime T: type, len: usize) Error!Slice(T) {
@@ -277,12 +323,18 @@ pub const Context = struct {
 
 pub const Module = struct {
     inner: cu.Module,
+    limits: Limits,
 
     /// Look up a kernel and bind it to its signature. `Signature` is a function
     /// type matching the kernel's Zig declaration, e.g.
     /// `fn ([*]const f32, [*]f32, u32) callconv(.kernel) void`.
     pub fn kernel(self: Module, comptime Signature: type, name: [:0]const u8) Error!Kernel(Signature) {
-        return .{ .inner = try self.inner.function(name) };
+        const f = try self.inner.function(name);
+        // A kernel's own thread ceiling is derived from its register use and can
+        // be well below the device's, so it has to come from the function rather
+        // than the device.
+        const own_max = f.attr(.max_threads_per_block) catch @as(u64, std.math.maxInt(u32));
+        return .{ .inner = f, .limits = self.limits, .max_threads = @intCast(own_max) };
     }
 
     /// Escape hatch for callers that cannot name the signature at comptime.
@@ -313,6 +365,10 @@ pub fn Kernel(comptime Signature: type) type {
 
     return struct {
         inner: cu.Function,
+        limits: Limits,
+        /// This kernel's own threads-per-block ceiling, which its register use can
+        /// push below the device's.
+        max_threads: u32,
         const Self = @This();
 
         pub const params = param_types;
@@ -349,6 +405,55 @@ pub fn Kernel(comptime Signature: type) type {
         /// Launch on the default stream.
         pub fn launch(self: Self, grid: Dims, block: Dims, args: anytype) Error!void {
             return self.launchOn(null, grid, block, 0, args);
+        }
+
+        /// Check launch geometry against the device's limits and this kernel's own.
+        ///
+        /// Without this the driver returns `CUDA_ERROR_INVALID_VALUE` or
+        /// `CUDA_ERROR_LAUNCH_OUT_OF_RESOURCES`, neither of which says which
+        /// dimension was wrong or what the limit is. The most confusing case is a
+        /// block size the device allows but this kernel does not, because its
+        /// register use lowers the ceiling — nothing in the source hints at it.
+        ///
+        /// `msg` receives a description when the geometry is rejected.
+        pub fn checkGeometry(self: Self, grid: Dims, block: Dims, dynamic_shared: u32, msg: *[]const u8, buf: []u8) bool {
+            const threads = @as(u64, block.x) * block.y * block.z;
+            if (threads == 0 or grid.x == 0 or grid.y == 0 or grid.z == 0) {
+                msg.* = std.fmt.bufPrint(buf, "empty launch: grid {d}x{d}x{d}, block {d}x{d}x{d}", .{
+                    grid.x, grid.y, grid.z, block.x, block.y, block.z,
+                }) catch "empty launch";
+                return false;
+            }
+            if (threads > self.max_threads) {
+                msg.* = std.fmt.bufPrint(buf, "block of {d} threads ({d}x{d}x{d}) exceeds this kernel's limit of {d}" ++
+                    "; a kernel's register use can cap it below the device's {d}", .{
+                    threads, block.x,      block.y,                  block.z,
+                    self.max_threads,      self.limits.max_threads_per_block,
+                }) catch "block too large for this kernel";
+                return false;
+            }
+            const bd = [3]u32{ block.x, block.y, block.z };
+            const gd = [3]u32{ grid.x, grid.y, grid.z };
+            const axis = [3]u8{ 'x', 'y', 'z' };
+            for (bd, self.limits.max_block, axis) |v, lim, ax| {
+                if (v > lim) {
+                    msg.* = std.fmt.bufPrint(buf, "block dim {c} is {d}, device maximum is {d}", .{ ax, v, lim }) catch "block dim too large";
+                    return false;
+                }
+            }
+            for (gd, self.limits.max_grid, axis) |v, lim, ax| {
+                if (v > lim) {
+                    msg.* = std.fmt.bufPrint(buf, "grid dim {c} is {d}, device maximum is {d}", .{ ax, v, lim }) catch "grid dim too large";
+                    return false;
+                }
+            }
+            if (dynamic_shared > self.limits.max_shared_per_block) {
+                msg.* = std.fmt.bufPrint(buf, "dynamic shared memory {d} B exceeds the device's {d} B per block", .{
+                    dynamic_shared, self.limits.max_shared_per_block,
+                }) catch "dynamic shared too large";
+                return false;
+            }
+            return true;
         }
 
         /// Launch on `stream`, optionally with dynamic shared memory.
@@ -402,6 +507,13 @@ pub fn Kernel(comptime Signature: type) type {
                 ptrs[i] = @ptrCast(&packed_args[i]);
             }
 
+            // Arithmetic against cached limits, so this costs nothing per launch.
+            var why: []const u8 = "";
+            var why_buf: [256]u8 = undefined;
+            if (!self.checkGeometry(grid, block, dynamic_shared, &why, &why_buf)) {
+                self.inner.drv.setError(why);
+                return error.InvalidLaunchGeometry;
+            }
             return self.inner.launchOn(
                 if (stream) |st| st.s else null,
                 grid.x,
@@ -415,6 +527,59 @@ pub fn Kernel(comptime Signature: type) type {
             );
         }
     };
+}
+
+test "checkGeometry names the dimension and the limit" {
+    // Geometry validation is pure arithmetic over cached limits, so it is
+    // testable without a GPU — which is the point: these are launch failures that
+    // otherwise only appear at runtime as an opaque driver code.
+    const K = Kernel(fn ([*]f32, u32) void);
+    const k: K = .{
+        .inner = undefined,
+        .limits = .{
+            .max_threads_per_block = 1024,
+            .max_block = .{ 1024, 1024, 64 },
+            .max_grid = .{ 2147483647, 65535, 65535 },
+            .max_shared_per_block = 49152,
+        },
+        // Below the device's 1024: this kernel's registers cap it at 512.
+        .max_threads = 512,
+    };
+    var buf: [256]u8 = undefined;
+    var msg: []const u8 = "";
+
+    try std.testing.expect(k.checkGeometry(.{ .x = 100 }, .{ .x = 512 }, 0, &msg, &buf));
+
+    // The confusing case: allowed by the device, not by this kernel.
+    try std.testing.expect(!k.checkGeometry(.{ .x = 1 }, .{ .x = 1024 }, 0, &msg, &buf));
+    try std.testing.expect(std.mem.indexOf(u8, msg, "exceeds this kernel's limit of 512") != null);
+    try std.testing.expect(std.mem.indexOf(u8, msg, "device's 1024") != null);
+
+    // Per-axis block limit, named.
+    try std.testing.expect(!k.checkGeometry(.{ .x = 1 }, .{ .x = 2, .y = 2, .z = 100 }, 0, &msg, &buf));
+    try std.testing.expect(std.mem.indexOf(u8, msg, "block dim z is 100") != null);
+
+    // Per-axis grid limit, named.
+    try std.testing.expect(!k.checkGeometry(.{ .x = 1, .y = 70000 }, .{ .x = 64 }, 0, &msg, &buf));
+    try std.testing.expect(std.mem.indexOf(u8, msg, "grid dim y is 70000") != null);
+
+    // Dynamic shared memory.
+    try std.testing.expect(!k.checkGeometry(.{ .x = 1 }, .{ .x = 64 }, 65536, &msg, &buf));
+    try std.testing.expect(std.mem.indexOf(u8, msg, "dynamic shared memory 65536 B") != null);
+
+    // A zero in any dimension launches nothing; the driver accepts it silently.
+    try std.testing.expect(!k.checkGeometry(.{ .x = 0 }, .{ .x = 64 }, 0, &msg, &buf));
+    try std.testing.expect(std.mem.indexOf(u8, msg, "empty launch") != null);
+    try std.testing.expect(!k.checkGeometry(.{ .x = 1 }, .{ .x = 64, .y = 0 }, 0, &msg, &buf));
+    try std.testing.expect(std.mem.indexOf(u8, msg, "empty launch") != null);
+}
+
+test "Limits.unknown accepts anything, so a failed query degrades to driver behaviour" {
+    const K = Kernel(fn ([*]f32, u32) void);
+    const k: K = .{ .inner = undefined, .limits = Limits.unknown, .max_threads = std.math.maxInt(u32) };
+    var buf: [256]u8 = undefined;
+    var msg: []const u8 = "";
+    try std.testing.expect(k.checkGeometry(.{ .x = 1 << 30 }, .{ .x = 4096 }, 1 << 20, &msg, &buf));
 }
 
 test "symbol mangling matches the NVPTX backend's naming" {

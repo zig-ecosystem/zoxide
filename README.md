@@ -427,6 +427,48 @@ try ctx.synchronize();
 try ctx.download(host_y, dy);
 ```
 
+### Failures that name themselves
+
+Two classes of runtime failure used to surface as an opaque code.
+
+**Launch geometry.** The driver answers a bad launch with
+`CUDA_ERROR_INVALID_VALUE` or `CUDA_ERROR_LAUNCH_OUT_OF_RESOURCES`, neither of
+which says which dimension was wrong or what the limit was. `launch` now checks
+geometry against the device's limits and the kernel's own before calling the
+driver:
+
+```
+block of 1024 threads (1024x1x1) exceeds this kernel's limit of 512;
+  a kernel's register use can cap it below the device's 1024
+block dim z is 100, device maximum is 64
+grid dim y is 70000, device maximum is 65535
+dynamic shared memory 65536 B exceeds the device's 49152 B per block
+empty launch: grid 0x1x1, block 64x1x1
+```
+
+The first is the one worth having. A block size the device permits but this
+kernel does not — because its register use lowers the ceiling — has no hint in
+the source at all. The last is a launch that silently does nothing, which the
+driver accepts without complaint.
+
+Limits are read once per context and the kernel's ceiling once per lookup, so
+validation is arithmetic and a benchmark loop pays nothing for it.
+
+**Driver errors.** `try ctx.module(bytes)` returning `error.CudaCall` teaches
+nothing, and the common causes each have a specific fix, so they have names now:
+
+| error | cause |
+| --- | --- |
+| `error.ArchMismatch` | cubin has no code for this GPU, usually built for another `sm_` |
+| `error.InvalidPtx` | driver rejected the PTX, e.g. `wgmma` without `sm_90a` |
+| `error.KernelNotFound` | the symbol is `<root source file stem>_$_<decl>` |
+| `error.LaunchOutOfResources` | registers, shared memory or threads beyond what the kernel can get |
+| `error.IllegalAddress` | out-of-bounds access, usually reported at the next sync |
+| `error.CudaOutOfMemory` | device allocation failed |
+
+Anything else stays `error.CudaCall` with the driver's text in
+`drv.lastError()`.
+
 ### Streams, pinned memory and occupancy
 
 A default-stream-only API can run a demo but not a pipeline. Transfers and
