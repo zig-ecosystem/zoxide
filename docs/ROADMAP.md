@@ -43,6 +43,29 @@
   是 128 字节连续，共享内存 32 banks × 4B = 128 字节一轮，单次读取已完整跨遍所有 bank，
   无冲突可消。swizzle 模式针对的是保持宽行距的布局（TMA 产出那种）
 
+### cuda-oxide 对照：f16/bf16 人性化层 —— 经测量，不需要
+对照 cuda-oxide 时我把「设备侧缺 f16/bf16 人性化层」列为真实缺口，依据是它的
+`cuda-device` 里有手写的 `f16.rs` / `f16x2.rs` / `bf16x2.rs`。**查生成的 PTX 后这个判断不成立**：
+
+| Zig 写法 | 生成的 PTX |
+| --- | --- |
+| `a * a`（f16） | `mul.rn.f16` |
+| `@mulAdd(f16, ...)` | `fma.rn.f16` |
+| `v * v`（`@Vector(2, f16)`） | `mul.rn.f16x2` |
+| `@mulAdd(@Vector(2, f16), ...)` | `fma.rn.f16x2` |
+| `@max(v, w)` | `max.f16x2` |
+| `@Vector(2, f16)` 的 load | `ld.global.b32`（正确合并） |
+
+语言本身就降到 packed 指令，写包装层等于重复语言能力。`src/gen/` 里那 66 条
+f16/f16x2/bf16/bf16x2 wrapper 仍有价值——它们覆盖 `ftz`/`nan`/`xorsign_abs`/`relu`/`sat`
+这些 Zig 没有语法的变体。
+
+见 `src/examples/f16_native.zig`。这条是 Zig NVPTX 后端的性质而不是本仓库的性质，
+所以 CI 断言那些指令仍然出现——上游回退否则我们看不见。
+
+真正的缺口是另一件事，已在本轮修掉：hgemm 全系列此前收 `[*]const u8` 手工算字节偏移，
+导致类型化 launch 对它们检查不到元素类型（`Slice(u8)` 什么都能塞）。现在收 `[*]const f16`。
+
 ### v0.0.9 — 定位剩余 41.7pp：已收敛到 n16
 四个候选，三个已用实验排除（详见 `docs/verification/`）：
 

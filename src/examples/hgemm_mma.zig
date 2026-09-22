@@ -35,7 +35,7 @@ pub const k_slice = 16;
 var as_buf: [block_tile][k_slice / 2]u32 addrspace(.shared) = undefined; // [row][k-pair]
 var bs_buf: [block_tile][k_slice / 2]u32 addrspace(.shared) = undefined; // [col][k-pair] (B transposed)
 
-fn loadTiles(a: [*]const u16, b: [*]const u16, n: u32, block_row: u32, block_col: u32, k0: u32, tid: u32) void {
+fn loadTiles(a: [*]const f16, b: [*]const f16, n: u32, block_row: u32, block_col: u32, k0: u32, tid: u32) void {
     // A: 64 rows x 16 k = 512 u32 (2 f16). tid covers 4 u32.
     inline for (0..4) |i| {
         const idx = tid * 4 + i; // 0..511
@@ -50,13 +50,15 @@ fn loadTiles(a: [*]const u16, b: [*]const u16, n: u32, block_row: u32, block_col
         const c = idx / (k_slice / 2);
         const kp = idx % (k_slice / 2);
         // two f16: B[k0 + kp*2][block_col + c], B[k0 + kp*2 + 1][block_col + c]
-        const lo = b[@as(usize, k0 + kp * 2) * n + block_col + c];
-        const hi = b[@as(usize, k0 + kp * 2 + 1) * n + block_col + c];
+        // Packed as raw bit patterns, which is what the mma fragment wants; the
+        // f16 pointer type is only about agreeing with the host on element size.
+        const lo: u16 = @bitCast(b[@as(usize, k0 + kp * 2) * n + block_col + c]);
+        const hi: u16 = @bitCast(b[@as(usize, k0 + kp * 2 + 1) * n + block_col + c]);
         bs_buf[c][kp] = @as(u32, lo) | (@as(u32, hi) << 16);
     }
 }
 
-pub fn hgemmMma(a: [*]const u16, b: [*]const u16, c: [*]f32, n: u32) callconv(.kernel) void {
+pub fn hgemmMma(a: [*]const f16, b: [*]const f16, c: [*]f32, n: u32) callconv(.kernel) void {
     const warp = cuda.threadIdx().x / 32; // 0..3
     const lane = cuda.laneId();
     const wy = warp / 2; // 0..1

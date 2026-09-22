@@ -214,6 +214,15 @@ Measured on H20 (n=4096): naive 2768 GFLOPS (6.3%), tiled 4367 (9.9%),
 reg 15319 (34.8%) of the ~44 TFLOPS FP32 peak; reg verified at n=4000
 (non-multiple boundary) too.
 
+- `f16_native.zig`: Zig's own `f16` and `@Vector(2, f16)`, with no wrapper layer.
+  Worth an example because the absence of a layer is a deliberate finding rather
+  than an omission: `a * a` becomes `mul.rn.f16`, `@mulAdd` on a
+  `@Vector(2, f16)` becomes `fma.rn.f16x2`, `@max` becomes `max.f16x2`, and
+  2-wide loads merge into `ld.global.b32`. A hand-written f16 arithmetic layer
+  would duplicate the language. What `src/gen/` still adds is the 66 variants Zig
+  has no syntax for — `ftz`, `nan`, `xorsign_abs`, `relu`, `sat`. CI asserts the
+  lowering holds, since it is a property of Zig's NVPTX backend rather than of
+  this repository.
 - `hgemm_mma.zig`: fp16 HGEMM on tensor cores via the generated
   `cuda.asm_gen` wrapper for `mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32`.
   Block tile 64x64, 4 warps (2x2), each warp a 2x4 grid of mma tiles (16x8),

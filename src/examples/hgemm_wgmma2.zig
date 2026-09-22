@@ -82,23 +82,23 @@ var bs_mem: [stages][b_bytes]u8 align(128) addrspace(.shared) = undefined;
 /// Core-matrix packed destinations, identical to v3:
 ///   A (64m x 16k, K-major):  offset(m, kb) = (m/8)*256 + kb*128 + (m%8)*16
 ///   B (16k x 128n, N-major): offset(k, nb) = nb*256 + k*16
-fn issueTileLoad(buf: u32, a: [*]const u8, b: [*]const u8, n: u32, block_row: u32, block_col: u32, k0: u32, tid: u32) void {
+fn issueTileLoad(buf: u32, a: [*]const f16, b: [*]const f16, n: u32, block_row: u32, block_col: u32, k0: u32, tid: u32) void {
     // A: 64 rows x 2 k-blocks = 128 chunks of 16 B, one per thread.
     {
         const m = tid / 2;
         const kb = tid % 2;
-        const src = a + (@as(usize, block_row + m) * n + k0 + kb * 8) * 2;
+        const src = a + (@as(usize, block_row + m) * n + k0 + kb * 8);
         const dst = (m / 8) * 256 + kb * 128 + (m % 8) * 16;
-        gen.async_copy.cp_async_cg_16(@ptrCast(&as_mem[buf][dst]), @addrSpaceCast(src));
+        gen.async_copy.cp_async_cg_16(@ptrCast(&as_mem[buf][dst]), @addrSpaceCast(@as([*]const u8, @ptrCast(src))));
     }
     // B: 16 k-rows x 16 n-blocks = 256 chunks, two per thread.
     inline for (0..2) |i| {
         const chunk = tid * 2 + i;
         const k = chunk / 16;
         const nb = chunk % 16;
-        const src = b + (@as(usize, k0 + k) * n + block_col + nb * 8) * 2;
+        const src = b + (@as(usize, k0 + k) * n + block_col + nb * 8);
         const dst = nb * 256 + k * 16;
-        gen.async_copy.cp_async_cg_16(@ptrCast(&bs_mem[buf][dst]), @addrSpaceCast(src));
+        gen.async_copy.cp_async_cg_16(@ptrCast(&bs_mem[buf][dst]), @addrSpaceCast(@as([*]const u8, @ptrCast(src))));
     }
     gen.async_copy.cp_async_commit_group();
 }
@@ -116,7 +116,7 @@ fn issueStage(buf: u32, acc: *[n_tiles]wg.Acc64x16, scale_d: bool) void {
     wg.commitGroup();
 }
 
-pub fn hgemmWgmma2(a: [*]const u8, b: [*]const u8, c: [*]f32, n: u32) callconv(.kernel) void {
+pub fn hgemmWgmma2(a: [*]const f16, b: [*]const f16, c: [*]f32, n: u32) callconv(.kernel) void {
     const tid = cuda.threadIdx().x;
     const warp = tid / 32;
     const lane = cuda.laneId();

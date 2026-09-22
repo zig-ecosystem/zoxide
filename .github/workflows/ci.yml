@@ -111,6 +111,20 @@ jobs:
           # The RS operand form takes two brace groups (accumulators, then A);
           # the SS form takes one followed by two descriptors.
           grep -qE 'wgmma\.mma_async[^{]*\{[^}]*\}, \{[^}]*\}' hgemm_wgmma3.ptx
+          # f16_native: Zig's own f16 / @Vector(2, f16) must keep lowering to the
+          # packed instructions. This is a property of Zig's NVPTX backend, not of
+          # this repo, so a regression upstream would otherwise be invisible —
+          # and it is the reason no f16 wrapper layer exists here.
+          grep -q 'mul\.rn\.f16x2' f16_native.ptx
+          grep -q 'fma\.rn\.f16x2' f16_native.ptx
+          grep -q 'max\.f16x2' f16_native.ptx
+          grep -q 'fma\.rn\.f16' f16_native.ptx
+          grep -q 'ld\.global\.b32' f16_native.ptx   # 2-wide f16 loads merge
+          # hgemm kernels take f16 pointers, not byte pointers, so the host side
+          # can type-check the buffers it passes.
+          for f in hgemm_mma hgemm_mma2 hgemm_wgmma hgemm_wgmma2 hgemm_wgmma3; do
+            grep -q '\.param \.u64 \.ptr' "$f.ptx" || { echo "$f: expected pointer params"; exit 1; }
+          done
           echo "PTX invariants OK"
 
       - name: pod-verify degraded mode (no GPU runner)
