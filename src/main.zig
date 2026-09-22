@@ -217,7 +217,7 @@ fn assemblePtx(gpa: std.mem.Allocator, io: std.Io, env: *std.process.Environ.Map
 }
 
 /// Version tag the scaffold points at for `zig fetch --save`. Bump with releases.
-const scaffold_version = "v0.0.11-alpha";
+const scaffold_version = "v0.0.12-alpha";
 
 fn cmdNew(gpa: std.mem.Allocator, io: std.Io, env: *std.process.Environ.Map, args: []const [:0]const u8) !u8 {
     var na: scaffold.NewArgs = .{ .name = "", .version = scaffold_version };

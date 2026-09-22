@@ -18,6 +18,7 @@
 | v0.0.9-alpha | wgmma RS（A 进寄存器）：hgemm_wgmma3 95.2 TF / 64.3% 峰值，结果精确，累计 1.77x |
 | v0.0.10-alpha | Host API：类型化 launch、stream、pinned、设备侧 memset、occupancy 查询 |
 | v0.0.11-alpha | `zoxide new` 脚手架；hgemm 签名改 f16；host API 真机验证全通 |
+| v0.0.12-alpha | 订正 v0.0.8 归因（1 字节溢出值 7.3% 吞吐，三级流水值 0）；bench 改用类型化 API；GPU CI job |
 
 ## 规划
 

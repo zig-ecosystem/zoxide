@@ -229,15 +229,15 @@ reg 15319 (34.8%) of the ~44 TFLOPS FP32 peak; reg verified at n=4000
   K-slice 16, f32 accumulators. Requires N % 16 == 0 (bench enforces).
   Fragment mapping follows the PTX ISA doc (derived in the kernel comments);
   B is stored transposed in shared so b-fragment pairs load as one u32.
-  Measured on H20: 36.8 TFLOPS (24.9% of the ~148 TFLOPS FP16 tensor peak).
+  Measured on H20: 36.7 TFLOPS (24.9% of the ~148 TFLOPS FP16 tensor peak).
 - `hgemm_mma2.zig`: + ldmatrix.x4/x2.trans fragment loads, 128x128 block
   tile (warp tile 64x64 = 4x8 mma), cp.async.cg 16B double-buffered pipeline
   (`cp_async_wait_group` takes a comptime immediate — the NVVM intrinsic's
   runtime i32 form does not select).
-  Measured on H20: 53.8 TFLOPS (36.4% of FP16 tensor peak), exact results.
+  Measured on H20: 54.5 TFLOPS (36.4% of FP16 tensor peak), exact results.
 ![HGEMM progression on H20](docs/assets/hgemm-progression.svg)
 
-- `hgemm_wgmma.zig`: Hopper warpgroup MMA. 80.3 TFLOPS (54.3% of FP16 tensor
+- `hgemm_wgmma.zig`: Hopper warpgroup MMA. 86.3 TFLOPS (54.3% of FP16 tensor
   peak) on H20, exact results — 1.49x over `hgemm_mma2`. One
   warpgroup (128 threads) per block, 64x128 block tile, K-slice 16, cp.async
   double buffering, both operands read asynchronously from shared memory via
@@ -292,7 +292,7 @@ reg 15319 (34.8%) of the ~44 TFLOPS FP32 peak; reg verified at n=4000
   core-matrix packed, and 128 contiguous bytes against 32 banks x 4 B already
   sweeps every bank exactly once.
 - `hgemm_wgmma3.zig`: A moved from shared memory into registers (`wgmma` RS
-  form). **95.2 TFLOPS (64.3% of FP16 tensor peak), exact results** — 1.77x over
+  form). **95.3 TFLOPS (64.3% of FP16 tensor peak), exact results** — 1.74x over
   `hgemm_mma2`.
 
   In the all-shared form each of the 8 wgmma covering a 128-wide tile re-reads
@@ -360,7 +360,7 @@ to look for). Example: `src/examples/debug_print.zig`.
 ```sh
 zoxide new my-thing
 cd my-thing
-zig fetch --save git+https://github.com/zig-ecosystem/zoxide#v0.0.11-alpha
+zig fetch --save git+https://github.com/zig-ecosystem/zoxide#v0.0.12-alpha
 zig build run        # needs an NVIDIA GPU
 zig build ptx        # emit the PTX to zig-out/kernels/ and read it
 ```
@@ -510,7 +510,7 @@ errors to build time and skips the JIT, at the cost of pinning one architecture.
 Easiest path — one bundle, three commands on the pod:
 
 ```sh
-curl -LO https://github.com/zig-ecosystem/zoxide/releases/download/v0.0.11-alpha/zoxide-linux-x64.tar.gz
+curl -LO https://github.com/zig-ecosystem/zoxide/releases/download/v0.0.12-alpha/zoxide-linux-x64.tar.gz
 tar xzf zoxide-linux-x64.tar.gz   # ./zoxide ./kernels/ ./scripts/
 ./scripts/pod-verify.sh ./zoxide ./kernels
 ```
