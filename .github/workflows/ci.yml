@@ -146,7 +146,19 @@ jobs:
           file /tmp/zoxide-musl/bin/zoxide | grep -q 'statically linked'
 
       - name: Downstream package integration
-        run: zig build
+        run: |
+          set -euo pipefail
+          zig build
+          zig build ptx
+          # Same assertion as for the scaffold. tests/downstream had this exact
+          # mismatch and it survived until the binary was first run on a GPU,
+          # because nothing on a machine without one can detect it.
+          entry=$(grep -oh '\.entry [^(]*' zig-out/kernels/*.ptx | sed 's/\.entry //' | head -1)
+          want=$(grep -o 'gpu\.symbol("[^"]*", "[^"]*")' main.zig | sed 's/gpu\.symbol("//; s/", "/_$_/; s/")//' | head -1)
+          if [ "$entry" != "$want" ]; then
+            echo "downstream: PTX entry '$entry' does not match the symbol main.zig looks up ('$want')"; exit 1
+          fi
+          echo "downstream entry point agrees with host lookup: $entry"
         working-directory: tests/downstream
       - name: Scaffold integration (zoxide new)
         run: |

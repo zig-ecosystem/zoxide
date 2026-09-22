@@ -33,7 +33,12 @@ pub fn main(init: std.process.Init) !u8 {
     });
 
     const mod = try ctx.moduleFromPtx(ptx);
-    const scale = try mod.kernel(api.scale, gpu.symbol("downstream_kernel", "scale"));
+    // "kernel" is kernel.zig's stem — the PTX symbol prefix comes from the root
+    // source file's name, not the build artifact's.
+    const scale = mod.kernel(api.scale, gpu.symbol("kernel", "scale")) catch |e| {
+        std.debug.print("FAIL: {s}: {s}\n", .{ @errorName(e), drv.lastError() });
+        return 1;
+    };
 
     // Resource use and occupancy as the driver sees them, not as inferred from
     // the PTX — the register limit matters and is invisible in source.

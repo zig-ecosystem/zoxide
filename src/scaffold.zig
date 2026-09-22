@@ -137,7 +137,12 @@ const main_zig_template =
     \\    const mod = try ctx.moduleFromPtx(ptx);
     \\    // "kernel" here is kernel.zig's stem — the PTX symbol prefix comes from
     \\    // the root source file's name, not from the build artifact's name.
-    \\    const scale = try mod.kernel(api.scale, gpu.symbol("@@KERNEL@@", "scale"));
+    \\    const scale = mod.kernel(api.scale, gpu.symbol("@@KERNEL@@", "scale")) catch |e| {
+    \\        // The driver's own message names the symbol it could not find,
+    \\        // which is the difference between a one-line fix and a guess.
+    \\        std.debug.print("FAIL: {s}: {s}\n", .{ @errorName(e), drv.lastError() });
+    \\        return 1;
+    \\    };
     \\
     \\    // Register and shared-memory use as the driver sees it. A non-zero spill
     \\    // is a performance bug worth noticing early.

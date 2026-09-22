@@ -28,11 +28,19 @@ pub const CUevent = ?*anyopaque;
 /// `check`.
 pub const cuda_error_not_ready: c_int = 600;
 
+/// `CUDA_ERROR_NOT_FOUND`. Returned by `cuModuleGetFunction` for a name the
+/// module does not export, which is common enough to deserve its own error: the
+/// symbol is `<root source file stem>_$_<decl>`, and guessing the artifact name
+/// instead produces exactly this.
+pub const cuda_error_not_found: c_int = 500;
+
 pub const Error = error{
     CudaInit,
     CudaCall,
     LibraryNotFound,
     SymbolMissing,
+    /// A module does not export the requested kernel name.
+    KernelNotFound,
 };
 
 pub const Driver = struct {
@@ -356,7 +364,19 @@ pub const Module = struct {
 
     pub fn function(self: Module, name: [:0]const u8) Error!Function {
         var f: CUfunction = null;
-        try self.drv.check(self.drv.cuModuleGetFunction(&f, self.m, name.ptr));
+        const r = self.drv.cuModuleGetFunction(&f, self.m, name.ptr);
+        if (r == cuda_error_not_found) {
+            const m = std.fmt.bufPrint(
+                &self.drv.err_buf,
+                "kernel '{s}' not found in module; the PTX symbol is " ++
+                    "<root source file stem>_$_<decl>, e.g. kernel_$_scale for kernel.zig — " ++
+                    "not the build artifact's name",
+                .{name},
+            ) catch "kernel not found in module";
+            self.drv.err_len = m.len;
+            return error.KernelNotFound;
+        }
+        try self.drv.check(r);
         return .{ .drv = self.drv, .f = f };
     }
 };
