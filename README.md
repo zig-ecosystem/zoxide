@@ -262,7 +262,8 @@ reg 15319 (34.8%) of the ~44 TFLOPS FP32 peak; reg verified at n=4000
   tile from shared memory 8x per K-stage instead of once. The 54.3% above is
   achieved *with* that handicap; see `docs/upstream-asm-output-limit.md`.
 - `hgemm_wgmma2.zig`: same shape, 3-stage pipeline. 86.3 TFLOPS (58.3% of FP16
-  tensor peak), exact results — 1.60x over `hgemm_mma2`.
+  tensor peak), exact results — but **worth nothing over `hgemm_wgmma`**, and the
+  story of why is worth more than the kernel.
 
   `hgemm_wgmma` ended every K-stage with `wgmma.wait_group 0`, draining the
   tensor core. With two buffers it had no choice: the buffer about to be
@@ -272,13 +273,19 @@ reg 15319 (34.8%) of the ~44 TFLOPS FP32 peak; reg verified at n=4000
   `kt-1` while `kt` stays in flight, and the slot that frees is
   `(kt-1) % 3 == (kt+2) % 3`, exactly the one stage `kt+2` wants.
 
-  Worth 4.0pp, which settles a question rather than just adding speed: the
-  remaining 41.7pp is *not* the pipeline. Two candidates are left and
-  spec-sheet arithmetic cannot separate them — the n16 shape costs 3.3x the
-  shared-memory operand traffic per flop (12.8 vs 42.7 flops/byte), while
-  global traffic is 3.22 GB per pass, or 2.02 TB/s against H20's ~4 TB/s HBM.
-  Deciding between them wants a profiler, not more arithmetic; see
-  `docs/verification/`.
+  It measured +4.0pp over `hgemm_wgmma` and I credited the pipeline. That was
+  wrong. This variant changed two things at once: the pipeline depth, and the
+  replacement of a `cur: u1` buffer toggle with `kt % stages`. The toggle had been
+  costing a 1-byte local-memory store per iteration. Removing that from
+  `hgemm_wgmma` too brings the two-stage kernel to the same 58.3%, so the pipeline
+  is worth **-0.0pp** and a single byte in local memory was worth 7.3% of
+  throughput.
+
+  Kept as a worked example of the technique, not because it is faster — it spends
+  6 KB more shared memory for identical throughput. The lesson is in
+  `docs/verification/`: I noticed the second change at the time, called it an
+  "incidental win", and described the comparison as a clean A/B in the same
+  paragraph.
 
   No swizzle, deliberately: the descriptor swizzle modes keep accesses
   conflict-free when a tile retains a wide row pitch, but these tiles are

@@ -9,8 +9,25 @@ fn cpAsyncWaitGroup(comptime num: u32) void {
     gen.async_copy.cp_async_wait_group(num);
 }
 
-/// HGEMM v4: `hgemm_wgmma` with a 3-stage pipeline so the warpgroup MMA
-/// actually overlaps the next tile's global loads. Requires sm_90a.
+/// HGEMM v4: `hgemm_wgmma` with a 3-stage pipeline so the warpgroup MMA can
+/// overlap the next tile's global loads. Requires sm_90a.
+///
+/// ## Measured outcome: no gain
+///
+/// This variant was credited with +4.1pp when first measured, and that was a
+/// misattribution. It changed two things relative to v3 at once: the pipeline
+/// depth (intended) and the replacement of a `cur: u1` buffer toggle with
+/// `kt % stages` (incidental). The toggle had been costing a 1-byte local-memory
+/// store every iteration. With that removed from v3 as well, v3 reaches the same
+/// 58.3% of peak on H20 with two stages, and the pipeline itself measures
+/// **-0.0pp**.
+///
+/// So draining the tensor core with `wgmma.wait_group 0` every stage — which the
+/// commentary below treats as obvious waste — costs nothing measurable here. It
+/// is kept as a worked example of the technique and because deeper pipelining may
+/// matter at other tile shapes, but it is not the faster kernel: it uses 6 KB
+/// more shared memory than v3 for the same throughput. Prefer v3 over v4, and
+/// `hgemm_wgmma3` over both.
 ///
 /// Same shape as v3 — 64x128 block tile, one warpgroup, K-slice 16, 8
 /// `m64n16k16` wgmma per K-stage — so the two are a clean A/B on the pipeline

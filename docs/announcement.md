@@ -4,6 +4,51 @@
 
 ---
 
+## v0.0.12-alpha — 一个字节的溢出值 7.3% 吞吐（2026-09-21）
+
+![hgemm progression](assets/hgemm-progression.svg)
+
+这轮没有新技术，是**订正 v0.0.8 的核心归因**。
+
+清掉 `hgemm_mma2` / `hgemm_wgmma` 里的 `cur: u1` 开关（唯一改动）后复测：
+
+| kernel | 改前 | 改后 | Δ |
+| --- | --- | --- | --- |
+| **hgemm_wgmma**（2 级流水） | **54.3%** | **58.3%** | **+4.0pp** |
+| hgemm_wgmma2（3 级流水） | 58.4% | 58.3% | −0.1 |
+| hgemm_mma2 | 36.4% | 36.8% | +0.4 |
+
+**2 级流水的 `hgemm_wgmma` 现在与 3 级流水的 `hgemm_wgmma2` 完全相等。** 所以 v0.0.8 记在「三级流水 + `wait_group 1`」名下的 +4.1pp，全部是那个 1 字节的循环内 local store。三级流水本身值 **−0.0pp**。
+
+### 错在方法，不在运气
+
+`hgemm_wgmma2` 相对 v3 同时改了两件事：流水线深度（有意）和 `cur: u1` → `kt % stages`（无意）。我把全部差值记给了前者。
+
+更糟的是我**当时就注意到了第二件**并写进提交信息——「两个意外收获：`kt % 3` 被强度削减；换掉 `cur: u1` 之后那个 1 字节 `__local_depot` 消失了」——却称之为「意外收获」，并在同一段里宣称这是「一次干净的 A/B」。
+
+一次只改一个变量。顺带发现的第二处改动是**另一个实验**，不是脚注。
+
+### 一个字节
+
+不是 64 字节、不是累加器溢出——是循环里**一个字节**的局部变量，驱动报成 8 B/thread，看着微不足道，值 7.3% 吞吐。
+
+结合早先的寄存器上限扫描（16 个寄存器溢出 = 0.55x），现在有两个数据点说明：Hopper 上任何进入 local memory 的循环内变量都是重大代价，**不存在「小溢出」**。bench 的 spill 警告和 CI 里那条 `st.local` 守卫因此都不是装饰。
+
+### 连带
+
+- `hgemm_wgmma2` 现在是冗余的：同吞吐、多 6 KB 共享内存。保留作技术演示，注释已如实标注「测不出收益」。
+- 「流水线排空 tensor core」这个假设排除得更彻底了：它从来不是因素。
+- v0.0.9 的 RS +6.0pp 仍成立（比的是两个都无溢出的版本）。
+- occupancy 再次被证明不是驱动因素：最慢的 `hgemm_mma` 占用率最高（44%），最快的 `hgemm_wgmma3` 最低（25%）。
+
+本轮还做完了采用度的最后三项：`bench` 改用自己发布的类型化 launch API（此前它还在手工打包 `?*anyopaque`）、示例签名集中到 `src/examples_abi.zig` 并由 kernel 自检、以及一个由仓库变量门控的 GPU CI job。
+
+发布文案（X 单帖）：
+
+> A one-byte local variable in a Hopper GEMM inner loop cost 7.3% of throughput. Worse: I had credited that gain to a three-stage pipeline, which measures 0.0pp once the byte is gone. I had even noticed the second change and called it incidental while describing the comparison as a clean A/B. github.com/zig-ecosystem/zoxide
+
+---
+
 ## v0.0.10-alpha — host API for real pipelines（2026-09-21）
 
 ![register sweep](assets/register-sweep.svg)

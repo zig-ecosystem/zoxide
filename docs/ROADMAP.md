@@ -75,7 +75,7 @@ f16/f16x2/bf16/bf16x2 wrapper 仍有价值——它们覆盖 `ftz`/`nan`/`xorsig
 
 | 假设 | 状态 |
 | --- | --- |
-| 流水线排空 tensor core | 已排除 —— 修好只值 4pp |
+| 流水线排空 tensor core | 已排除 —— 且比原以为的更彻底：那 4pp 实为一个 1 字节溢出，三级流水本身值 −0.0pp |
 | 全局流量 / DRAM 带宽 | 已排除 —— L2 边界 sweep 跨界持平（57.9% → 58.3% → 57.8%） |
 | warpgroup 并发 / occupancy | 已排除（实测）—— 驱动实测 4 blocks/SM、25%（寄存器约束，非共享内存）。用 `--maxrregcount 96` 零溢出地提到 5 blocks/31%，吞吐反而 0.97x |
 | **n16 单指令 tensor core 效率** | **剩下的唯一候选** |
