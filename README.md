@@ -353,7 +353,7 @@ to look for). Example: `src/examples/debug_print.zig`.
 ```sh
 zoxide new my-thing
 cd my-thing
-zig fetch --save git+https://github.com/zig-ecosystem/zoxide#v0.0.10-alpha
+zig fetch --save git+https://github.com/zig-ecosystem/zoxide#v0.0.11-alpha
 zig build run        # needs an NVIDIA GPU
 zig build ptx        # emit the PTX to zig-out/kernels/ and read it
 ```
@@ -503,7 +503,7 @@ errors to build time and skips the JIT, at the cost of pinning one architecture.
 Easiest path — one bundle, three commands on the pod:
 
 ```sh
-curl -LO https://github.com/zig-ecosystem/zoxide/releases/download/v0.0.10-alpha/zoxide-linux-x64.tar.gz
+curl -LO https://github.com/zig-ecosystem/zoxide/releases/download/v0.0.11-alpha/zoxide-linux-x64.tar.gz
 tar xzf zoxide-linux-x64.tar.gz   # ./zoxide ./kernels/ ./scripts/
 ./scripts/pod-verify.sh ./zoxide ./kernels
 ```
