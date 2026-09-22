@@ -1,5 +1,6 @@
 const std = @import("std");
 const run_cmd = @import("run.zig");
+const scaffold = @import("scaffold.zig");
 const bench_cmd = @import("bench.zig");
 const gen_cmd = @import("gen.zig");
 
@@ -50,6 +51,8 @@ pub fn main(init: std.process.Init) !u8 {
         return gen_cmd.genMain(gpa, io, args[2..], &w.interface);
     } else if (std.mem.eql(u8, cmd, "bench")) {
         return cmdBench(gpa, io, init.environ_map, args[2..]);
+    } else if (std.mem.eql(u8, cmd, "new")) {
+        return cmdNew(gpa, io, init.environ_map, args[2..]);
     } else if (std.mem.eql(u8, cmd, "help") or std.mem.eql(u8, cmd, "--help") or std.mem.eql(u8, cmd, "-h")) {
         usage();
         return 0;
@@ -66,6 +69,7 @@ fn usage() void {
         \\usage:
         \\  zoxide ptx <kernel.zig> -o out.ptx [--arch sm_XX]     compile Zig source to PTX via zig (default {s})
         \\  zoxide cubin <in.ptx> -o out.cubin [--arch sm_XX]     assemble PTX via ptxas (default {s})
+        \\  zoxide new <name> [--dir path] [--zoxide-path dir]    scaffold a host+device package
         \\  zoxide doctor [--arch sm_XX]                          probe zig / nvptx / ptxas / libNVVM / GPU
         \\  zoxide run <example.ptx|.cubin> [--kernel name] [--n N] [--grid G --block B] [--arch sm_XX]
         \\                                                       run an example kernel on the GPU and verify results
@@ -210,6 +214,37 @@ fn assemblePtx(gpa: std.mem.Allocator, io: std.Io, env: *std.process.Environ.Map
     defer gpa.free(result.stdout);
     defer gpa.free(result.stderr);
     if (!termOk(result.term)) return error.PtxasFailed;
+}
+
+/// Version tag the scaffold points at for `zig fetch --save`. Bump with releases.
+const scaffold_version = "v0.0.10-alpha";
+
+fn cmdNew(gpa: std.mem.Allocator, io: std.Io, env: *std.process.Environ.Map, args: []const [:0]const u8) !u8 {
+    var na: scaffold.NewArgs = .{ .name = "", .version = scaffold_version };
+    var have_name = false;
+    var i: usize = 0;
+    while (i < args.len) : (i += 1) {
+        const a = args[i];
+        if (std.mem.eql(u8, a, "--dir")) {
+            i += 1;
+            if (i >= args.len) return usageErr("new: --dir requires a value");
+            na.dir = args[i];
+        } else if (std.mem.eql(u8, a, "--zoxide-path")) {
+            i += 1;
+            if (i >= args.len) return usageErr("new: --zoxide-path requires a value");
+            na.zoxide_path = args[i];
+        } else if (!have_name) {
+            na.name = a;
+            have_name = true;
+        } else {
+            return usageErr("new: unexpected argument");
+        }
+    }
+    if (!have_name) return usageErr("expected 'zoxide new <name> [--dir path] [--zoxide-path dir]'");
+    var buf: [4096]u8 = undefined;
+    var w = std.Io.File.stdout().writerStreaming(io, &buf);
+    defer w.interface.flush() catch {};
+    return scaffold.run(gpa, io, env, na, &w.interface);
 }
 
 fn cmdRun(gpa: std.mem.Allocator, io: std.Io, env: *std.process.Environ.Map, args: []const [:0]const u8) !u8 {

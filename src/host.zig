@@ -94,15 +94,22 @@ pub fn gridFor(n: usize, block: u32) u32 {
     return @intCast((n + block - 1) / block);
 }
 
-/// Zig's NVPTX backend names an exported kernel `<object>_$_<decl path>`, with
-/// `$_` joining namespace components. Spelling that by hand is easy to get
-/// subtly wrong, and the failure mode is a runtime "kernel not found".
-pub fn symbol(comptime object: []const u8, comptime decl_path: []const u8) [:0]const u8 {
+/// Zig's NVPTX backend names an exported kernel `<root source file stem>_$_<decl
+/// path>`, with `$_` joining namespace components. For `kernel.zig` containing
+/// `pub fn scale`, that is `kernel_$_scale`.
+///
+/// Note it is the **root source file's** name, not the object or artifact name.
+/// Those often coincide — zoxide's own examples are `src/examples/<name>.zig`
+/// built as object `<name>` — which makes the distinction easy to miss, and the
+/// failure mode is a runtime "kernel not found" rather than a build error. An
+/// earlier version of this comment said `<object>`, and the scaffold generated
+/// from it produced packages that could not find their own kernels.
+pub fn symbol(comptime root_source_stem: []const u8, comptime decl_path: []const u8) [:0]const u8 {
     // Materialised as a static constant rather than returned straight out of a
     // comptime block, so the function can be called from runtime code.
     const S = struct {
         const joined = blk: {
-            var out: []const u8 = object;
+            var out: []const u8 = root_source_stem;
             var it = std.mem.splitScalar(u8, decl_path, '.');
             while (it.next()) |part| out = out ++ "_$_" ++ part;
             break :blk out;

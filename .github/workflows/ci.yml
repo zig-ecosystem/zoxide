@@ -134,6 +134,28 @@ jobs:
       - name: Downstream package integration
         run: zig build
         working-directory: tests/downstream
+      - name: Scaffold integration (zoxide new)
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/scaffold && mkdir -p /tmp/scaffold
+          ./zig-out/bin/zoxide new scaffolded --dir /tmp/scaffold/scaffolded --zoxide-path "$PWD"
+          cd /tmp/scaffold/scaffolded
+          zig build
+          zig build ptx
+          # The PTX symbol prefix is the root source file's stem, not the build
+          # artifact's name. Those differed once and produced a package whose host
+          # side could not find its own kernel, with no build error — so assert
+          # the generated launch lookup matches the generated entry point.
+          entry=$(grep -oh '\.entry [^(]*' zig-out/kernels/*.ptx | sed 's/\.entry //' | head -1)
+          want=$(grep -o 'gpu\.symbol("[^"]*", "[^"]*")' main.zig | sed 's/gpu\.symbol("//; s/", "/_$_/; s/")//' | head -1)
+          if [ "$entry" != "$want" ]; then
+            echo "scaffold: PTX entry '$entry' does not match the symbol main.zig looks up ('$want')"; exit 1
+          fi
+          echo "scaffold entry point agrees with host lookup: $entry"
+          # A generated template that spills is a template bug.
+          if grep -q 'st\.local' zig-out/kernels/*.ptx; then echo "scaffold kernel spilled"; exit 1; fi
+          # Degrades cleanly with no GPU on the CI runner.
+          ./zig-out/bin/scaffolded
 
       - name: doctor degrades gracefully without GPU
         run: ./zig-out/bin/zoxide doctor

@@ -339,6 +339,27 @@ ints (≤64-bit), f32/f64, bool. Device output reaches host stdout at the next
 `debug_print` harness in `zoxide run` is therefore fail-open (it prints what
 to look for). Example: `src/examples/debug_print.zig`.
 
+## Starting a new package
+
+```sh
+zoxide new my-thing
+cd my-thing
+zig fetch --save git+https://github.com/zig-ecosystem/zoxide#v0.0.10-alpha
+zig build run        # needs an NVIDIA GPU
+zig build ptx        # emit the PTX to zig-out/kernels/ and read it
+```
+
+`--zoxide-path <dir>` depends on a local checkout instead, which needs no
+network; `--dir <path>` puts the package somewhere other than `./<name>`.
+
+The generated package is the same shape as `tests/downstream/`, so the
+integration test and the scaffold cannot disagree about the recommended layout.
+It comes with a working kernel, a shared signature module, pinned staging, a
+stream, and an occupancy report — enough to see all the pieces at once.
+
+`build.zig.zon`'s `fingerprint` is filled in by asking the compiler rather than
+by reimplementing its hash, which would rot the moment Zig changed it.
+
 ## Using zoxide from your own package
 
 Both sides of a GPU program live in one package: the kernel compiles to PTX for
