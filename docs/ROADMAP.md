@@ -50,7 +50,7 @@
 | --- | --- |
 | 流水线排空 tensor core | 已排除 —— 修好只值 4pp |
 | 全局流量 / DRAM 带宽 | 已排除 —— L2 边界 sweep 跨界持平（57.9% → 58.3% → 57.8%） |
-| warpgroup 并发不足 | **撤回排除** —— 依据的 12 blocks/SM 是我拿共享内存预算除出来的；驱动实测 4 blocks/SM、25% occupancy，寄存器才是约束 |
+| warpgroup 并发 / occupancy | 已排除（实测）—— 驱动实测 4 blocks/SM、25%（寄存器约束，非共享内存）。用 `--maxrregcount 96` 零溢出地提到 5 blocks/31%，吞吐反而 0.97x |
 | **n16 单指令 tensor core 效率** | **剩下的唯一候选** |
 
 - [x] ~~ncu profile 分流~~ —— pod 上不可用（`ERR_NVGPUCTRPERM`，需节点级放开计数器权限）；
@@ -60,11 +60,10 @@
   放宽 M/N 只改变 block 数量，不改变每条 wgmma 重读 A 的次数——只有单条指令的 N 变宽才改变它
 - [x] **A 进寄存器（wgmma RS）** —— +6.0pp，64.3%。这条推翻了上一轮「只有宽 N 能降操作数流量」
   的断言：RS 形态累加器仍是 8 个，落在 15 输出限制内，而操作数流量已与 n128 持平（42.7 flops/byte）
-- [ ] **`--maxrregcount 96` 实验**（最便宜，已具备）：98 → 96 regs/thread 就能从 4 blocks/SM
-  变成 5（occupancy 25% → 31%）。代价是 2 个寄存器溢出到 local memory，划算与否无法预测。
-  这条同时检验刚被撤回的「并发不足」假设
-- [ ] **打补丁的 zig（output 上限 32）编 `m64n64k16`**。操作数流量既已与 n128 持平，
-  却仍距峰值 35.6pp；但在 occupancy 那条搞清楚之前，不能再说「剩下的只能是单指令成本」
+- [x] **`--maxrregcount` 扫描** —— occupancy 不是约束：零溢出下 5 blocks/31% 比 4 blocks/25% 慢 3%。
+  寄存器维度关闭（98 regs / 4 blocks 即最优）。顺带量化了溢出代价：16 个寄存器溢出 = 0.55x 吞吐
+- [ ] **打补丁的 zig（output 上限 32）编 `m64n64k16`** —— 四条排除现已全部有实测支撑，
+  n16 单指令效率是唯一剩下的候选，而测它必须把 N 变宽。按你的要求，这条留到最后再谈
 - [ ] 上游提交（ziglang/zig issue 创建受限于 collaborator，走 `docs/drafts/` 里记录的 fallback 渠道）
 - [ ] TMA 替代 cp.async（与 n16 无关的独立方向）
 

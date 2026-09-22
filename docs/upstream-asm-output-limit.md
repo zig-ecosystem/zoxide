@@ -100,7 +100,8 @@ been eliminated by experiment on H20 (details in `docs/verification/`):
 | --- | --- |
 | pipeline draining the tensor core | eliminated — fixing it was worth 4pp |
 | global traffic / DRAM bandwidth | eliminated — throughput is flat across the L2 boundary (57.9% at 36 MB working set, 58.3% at 64 MB, 57.8% at 256 MB) |
-| too few independent warpgroups | **retracted** — that rested on 12 blocks resident per SM, which I had derived by dividing the SM's shared-memory budget by the kernel's usage. The driver's own figure is 4 blocks at 25% occupancy: registers bind, not shared memory. 4 streams is not evidence of sufficient concurrency, so this is open again |
+| too few independent warpgroups | eliminated, on measurement this time. My first attempt at this rested on 12 blocks per SM, derived by dividing the SM's shared-memory budget by the kernel's usage; the driver's figure is 4 blocks at 25%, because registers bind, not shared memory. Capping registers to reach 5 blocks at 31% with no spill made the kernel **slower** (0.97x), so 4 blocks already hides the latency |
+| register pressure / occupancy | closed — 98 regs at 4 blocks/SM is the optimum; both more and fewer registers are worse |
 | **per-instruction efficiency of n16** | **the only candidate left** |
 
 ### Correction, and why the case is now stronger

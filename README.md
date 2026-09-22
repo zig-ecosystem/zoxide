@@ -431,8 +431,11 @@ registers per thread the register file binds long before shared memory does, so
 the hand calculation was measuring the wrong limit and the real occupancy is 25%,
 not 75%. That error had propagated into a performance conclusion before the API
 existed to catch it.
-`res.local_bytes` being non-zero means the kernel spilled to local memory, which
-is usually a performance bug worth failing a build over. `zoxide bench` now
+`res.local_bytes` being non-zero means the kernel spilled to local memory, and on
+this hardware that is severe rather than marginal: a register-cap sweep of
+`hgemm_wgmma3` measured 16 spilled registers costing **45% of throughput** (64.3%
+of peak down to 35.3%), and 48 spilled registers costing 71%. Worth failing a
+build over. `zoxide bench` now
 prints all of this per kernel, and `--maxrregcount N` passes a register cap to
 ptxas for trading spills against occupancy.
 

@@ -4,6 +4,45 @@
 
 ---
 
+## v0.0.10-alpha — host API for real pipelines（2026-09-21）
+
+这轮没有性能数字，做的是**别人能不能用起来**。
+
+此前下游用户编出 kernel 就断了：driver 绑定在 CLI 内部，想跑自己的 kernel 得自己写一遍 libcuda FFI。现在有 `zoxide_host` 模块，host 和 device 同包，签名声明一次两边共享。
+
+**类型化 launch。** `cuLaunchKernel` 收 `void**`，参数个数、顺序、宽度都没人管，写错**不崩**——kernel 读到相邻内存，返回看起来合理的错数字。六种以前静默的错误现在是编译错误（每条都拿真编译器验过）：参数多/少、标量宽度、缓冲元素类型、顺序颠倒、传主机指针、device 改了 host 没改。
+
+**stream / pinned / 异步传输 / 设备侧 memset / occupancy 查询。** driver 绑定从 22 个到 36 个。`Pinned(T)` 是和异步拷贝一起做的，不是凑数：`cuMemcpy*Async` 从普通可分页内存发出时是**名义异步**，驱动要经内部 pinned 缓冲转运并阻塞。只给 stream 不给 pinned 会交出一个静默不重叠的 API，比没有更糟。
+
+### 新 API 立刻抓出我自己的一个错
+
+我曾手算「`hgemm_wgmma3` 每 SM 驻留 12 个 block」——228 KB 共享内存除以 18 KB。驱动说是 **4**：98 regs/thread，寄存器远早于共享内存成为约束，真实 occupancy 是 **25% 不是 75%**。算术没错，算的是错的限制。
+
+后果不止是个错数字：我曾用「12 条流、75% occupancy」**排除**过「warpgroup 并发不足」这个假设。4 条流、25% 什么都证明不了，所以那条排除被撤回，三处文档原地改正。
+
+随后用新加的 `--maxrregcount` 把它测清楚了：
+
+| cap | regs | blocks/SM | occupancy | 峰值 | 溢出 |
+| --- | --- | --- | --- | --- | --- |
+| 无 | 98 | 4 | 25% | **64.3%** | 0 |
+| 96 | 94 | 5 | 31% | 62.3% | 0 |
+| 88 | 88 | 5 | 31% | 35.3% | 64 B |
+| 72 | 72 | 7 | 44% | 18.8% | 192 B |
+
+`cap 96` 那行是关键：**零溢出**，occupancy 提到 31%，吞吐反而掉 3%。所以并发假设这次被真正排除了——而且是拿实测排除，不是拿推算排除。寄存器维度关闭，98 regs / 4 blocks 就是最优点。
+
+**溢出的代价也量化了：16 个寄存器溢出 = 0.55x 吞吐。** 这回过头验证了一件事——写 v0.0.9 时 `afrag[kt % 2]` 的运行时下标曾产生每轮 20 条 `st.local`，我是靠 grep 生成的 PTX 才发现的（源码上双缓冲完全正确）。按这张表，那个 bug 的代价约等于**整个 wgmma 路线的全部收益**。CI 里那条「不许出现 `st.local`」的守卫因此不是装饰。
+
+### 方法教训，同一家族的第二次
+
+上一轮是「排除法指方向，不能代替对机制的分解」。这次是它的镜像：**排除一个假设之前，先确认用来排除它的数字是测出来的而不是推出来的。** 共享内存那个除法单位对、数量级合理，却默默忽略了整个寄存器维度——而能正确回答它的驱动 API 一直都在，我只是没绑。
+
+发布文案（X 单帖）：
+
+> zoxide v0.0.10-alpha: typed CUDA kernel launches in Zig — wrong arg count, order, width or a host pointer where a device one belongs are now compile errors instead of silent memory corruption. Plus streams, pinned memory and occupancy queries, which promptly caught a wrong occupancy figure in my own perf notes. github.com/zig-ecosystem/zoxide
+
+---
+
 ## v0.0.9-alpha — A from registers, 64.3% of FP16 peak（2026-09-21）
 
 ![hgemm progression](assets/hgemm-progression.svg)
