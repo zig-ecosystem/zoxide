@@ -446,26 +446,41 @@ fn cmdDoctor(gpa: std.mem.Allocator, io: std.Io, env: *std.process.Environ.Map, 
     }
 
     // --- run workflow: GPU ---
+    const probe = probeGpu(gpa, io);
+    defer probe.deinit(gpa);
     var gpu: ?GpuInfo = null;
-    defer if (gpu) |g| {
-        gpa.free(g.name);
-        gpa.free(g.cc);
-        gpa.free(g.driver);
-    };
-    if (probeGpu(gpa, io)) |g| {
-        gpu = g;
-        print(io, "[ok  ] gpu: {s} (compute capability {s}, driver {s})\n", .{ g.name, g.cc, g.driver });
-        if (want_arch) |a| {
-            const gpu_sm = ccToSm(g.cc);
-            if (!std.mem.eql(u8, a, &gpu_sm)) {
-                print(io, "[fail] arch check: requested {s} does not match this GPU ({s}); cubins are not forward-compatible across major CC\n", .{ a, gpu_sm });
-                any_fail = true;
-            } else {
-                print(io, "[ok  ] arch check: {s} matches this GPU\n", .{a});
+    switch (probe) {
+        .ok => |g| {
+            gpu = g;
+            print(io, "[ok  ] gpu: {s} (compute capability {s}, driver {s})\n", .{ g.name, g.cc, g.driver });
+            if (want_arch) |a| {
+                const gpu_sm = ccToSm(g.cc);
+                if (!std.mem.eql(u8, a, &gpu_sm)) {
+                    print(io, "[fail] arch check: requested {s} does not match this GPU ({s}); cubins are not forward-compatible across major CC\n", .{ a, gpu_sm });
+                    any_fail = true;
+                } else {
+                    print(io, "[ok  ] arch check: {s} matches this GPU\n", .{a});
+                }
             }
-        }
-    } else {
-        print(io, "[warn] gpu: no GPU visible (nvidia-smi missing or failed); fine on a dev machine\n", .{});
+        },
+        .not_installed => print(io, "[warn] gpu: nvidia-smi not found; fine on a dev machine\n", .{}),
+        // Distinguished from "not installed" on purpose. nvidia-smi being present
+        // and failing means something is wrong that its own message identifies —
+        // typically a container that did not receive the device, or a
+        // driver/library version mismatch. Reporting that as "no GPU here" sends
+        // the reader looking in the wrong place.
+        .failed => |msg| print(io,
+            \\[warn] gpu: nvidia-smi is installed but failed. Its message:
+            \\         {s}
+            \\       In a container this usually means the device was not passed
+            \\       through, or the driver and the userspace libraries disagree.
+            \\
+        , .{msg}),
+        .unparsable => |msg| print(io,
+            \\[warn] gpu: nvidia-smi succeeded but its output could not be parsed:
+            \\         {s}
+            \\
+        , .{msg}),
     }
 
     print(io, "summary:\n", .{});
@@ -491,28 +506,77 @@ const GpuInfo = struct { name: []u8, cc: []u8, driver: []u8 };
 
 /// Run nvidia-smi and parse "name, compute_cap, driver_version" for the first GPU.
 /// Returns null (caller-owned fields otherwise) when nvidia-smi is absent/fails.
-fn probeGpu(gpa: std.mem.Allocator, io: std.Io) ?GpuInfo {
+/// Outcome of probing for a GPU.
+///
+/// Previously all of these collapsed to `null` and `doctor` reported "no GPU
+/// visible (nvidia-smi missing or failed); fine on a dev machine". That is
+/// actively misleading in the case that matters most: inside a container,
+/// `nvidia-smi` is usually installed and *fails*, with a message that names the
+/// cause — a device mapping the container did not get, or a driver/library
+/// version mismatch. Both look identical to "no GPU here" unless the message
+/// survives, and doctor's whole job is to surface it.
+const GpuProbe = union(enum) {
+    ok: GpuInfo,
+    /// Could not be spawned: not installed, or not on PATH. Expected on a dev
+    /// machine and in CI.
+    not_installed,
+    /// Ran and failed. Owns nvidia-smi's own diagnosis.
+    failed: []u8,
+    /// Ran successfully but produced nothing usable. Owns what it printed.
+    unparsable: []u8,
+
+    fn deinit(self: GpuProbe, gpa: std.mem.Allocator) void {
+        switch (self) {
+            .ok => |g| {
+                gpa.free(g.name);
+                gpa.free(g.cc);
+                gpa.free(g.driver);
+            },
+            .failed, .unparsable => |m| gpa.free(m),
+            .not_installed => {},
+        }
+    }
+};
+
+fn probeGpu(gpa: std.mem.Allocator, io: std.Io) GpuProbe {
     const res = std.process.run(gpa, io, .{
         .argv = &.{ "nvidia-smi", "--query-gpu=name,compute_cap,driver_version", "--format=csv,noheader" },
-    }) catch return null;
-    defer gpa.free(res.stderr);
+    }) catch return .not_installed;
     if (!termOk(res.term)) {
         gpa.free(res.stdout);
-        return null;
+        // nvidia-smi's own words; this is the whole point.
+        const msg = std.mem.trim(u8, res.stderr, " \r\n\t");
+        if (msg.len == 0) {
+            gpa.free(res.stderr);
+            return .{ .failed = gpa.dupe(u8, "nvidia-smi exited non-zero with no message") catch return .not_installed };
+        }
+        const owned = gpa.dupe(u8, msg) catch {
+            gpa.free(res.stderr);
+            return .not_installed;
+        };
+        gpa.free(res.stderr);
+        return .{ .failed = owned };
     }
+    defer gpa.free(res.stderr);
     defer gpa.free(res.stdout);
     var lines = std.mem.splitScalar(u8, res.stdout, '\n');
     const first = std.mem.trim(u8, lines.first(), " \r\t");
-    if (first.len == 0) return null;
+    const unparsable = struct {
+        fn make(a: std.mem.Allocator, raw: []const u8) GpuProbe {
+            const shown = if (raw.len == 0) "empty output" else raw;
+            return .{ .unparsable = a.dupe(u8, shown) catch return .not_installed };
+        }
+    }.make;
+    if (first.len == 0) return unparsable(gpa, std.mem.trim(u8, res.stdout, " \r\n\t"));
     var fields = std.mem.splitScalar(u8, first, ',');
-    const name = std.mem.trim(u8, fields.next() orelse return null, " ");
-    const cc = std.mem.trim(u8, fields.next() orelse return null, " ");
-    const driver = std.mem.trim(u8, fields.next() orelse return null, " ");
-    return .{
-        .name = gpa.dupe(u8, name) catch return null,
-        .cc = gpa.dupe(u8, cc) catch return null,
-        .driver = gpa.dupe(u8, driver) catch return null,
-    };
+    const name = std.mem.trim(u8, fields.next() orelse return unparsable(gpa, first), " ");
+    const cc = std.mem.trim(u8, fields.next() orelse return unparsable(gpa, first), " ");
+    const driver = std.mem.trim(u8, fields.next() orelse return unparsable(gpa, first), " ");
+    return .{ .ok = .{
+        .name = gpa.dupe(u8, name) catch return .not_installed,
+        .cc = gpa.dupe(u8, cc) catch return .not_installed,
+        .driver = gpa.dupe(u8, driver) catch return .not_installed,
+    } };
 }
 
 /// Map a compute capability like "9.0" to an sm arch string like "sm_90".
@@ -555,10 +619,13 @@ fn fileExists(io: std.Io, path: []const u8) bool {
 /// Locate ptxas: PATH probe first, then $CUDA_HOME/bin, then /usr/local/cuda/bin.
 /// Returned slice is caller-owned.
 fn findPtxas(gpa: std.mem.Allocator, io: std.Io, env: *std.process.Environ.Map) ?[]u8 {
+    // A ptxas on PATH that fails `--version` is a broken toolchain, not an absent
+    // one; say so rather than falling through to the CUDA_HOME guesses in silence.
     if (std.process.run(gpa, io, .{ .argv = &.{ "ptxas", "--version" } }) catch null) |res| {
         gpa.free(res.stdout);
         gpa.free(res.stderr);
         if (termOk(res.term)) return gpa.dupe(u8, "ptxas") catch null;
+        std.debug.print("note: a ptxas on PATH failed `--version`; ignoring it and looking in CUDA_HOME\n", .{});
     }
     if (env.get("CUDA_HOME")) |home| {
         const cand = std.fs.path.join(gpa, &.{ home, "bin", "ptxas" }) catch null;

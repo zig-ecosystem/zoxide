@@ -469,6 +469,14 @@ nothing, and the common causes each have a specific fix, so they have names now:
 Anything else stays `error.CudaCall` with the driver's text in
 `drv.lastError()`.
 
+The same rule is applied to the toolchain, not just the driver. `zoxide doctor`
+distinguishes "nvidia-smi is not installed" from "nvidia-smi is installed and
+failed" and prints its message — in a container the latter is usually a device
+that was not passed through or a driver/userspace version mismatch, and reporting
+it as "no GPU here" sends the reader to the wrong place. Likewise a failing
+`ptxas` prints its own diagnostics rather than producing "is ptxas available?"
+when it plainly is.
+
 ### Streams, pinned memory and occupancy
 
 A default-stream-only API can run a demo but not a pipeline. Transfers and

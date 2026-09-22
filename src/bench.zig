@@ -147,7 +147,12 @@ pub fn benchMain(
     };
     var name_buf: [128]u8 = undefined;
     try out.print("device: {s}\n", .{ctx.name(&name_buf)});
-    const dev_info: ?cu.Context.Info = ctx.info() catch null;
+    // Reported rather than swallowed: the device line is how a reader tells which
+    // GPU produced a number, and silently omitting it hides that the query broke.
+    const dev_info: ?cu.Context.Info = ctx.info() catch |e| blk: {
+        try out.print("  (device attributes unavailable: {s}: {s})\n", .{ @errorName(e), drv.lastError() });
+        break :blk null;
+    };
     if (dev_info) |di| {
         try out.print("  {d} SMs, {d:.0} MB L2, {d:.0} KB shared/SM\n", .{
             di.sms,
@@ -172,14 +177,16 @@ pub fn benchMain(
             try out.print("error: {s}: {s}\n", .{ @errorName(e), drv.lastError() });
             return 1;
         };
-        reportOccupancy(kern.inner, 128, dev_info, out) catch {};
+        reportOccupancy(kern.inner, 128, dev_info, out) catch |e|
+            try out.print("kernel: resource/occupancy query failed ({s}): {s}\n", .{ @errorName(e), drv.lastError() });
         return runHgemm(gpa, &ctx, kern, n, args.iters, out, hgemm_tile_m, hgemm_tile_n, dev_info);
     }
     const kern = mod.kernel(api.sgemm, namez) catch |e| {
         try out.print("error: {s}: {s}\n", .{ @errorName(e), drv.lastError() });
         return 1;
     };
-    reportOccupancy(kern.inner, if (regblocked) 128 else 1024, dev_info, out) catch {};
+    reportOccupancy(kern.inner, if (regblocked) 128 else 1024, dev_info, out) catch |e|
+        try out.print("kernel: resource/occupancy query failed ({s}): {s}\n", .{ @errorName(e), drv.lastError() });
 
     // Host buffers.
     const elems = n * n;
