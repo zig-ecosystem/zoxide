@@ -390,6 +390,47 @@ try ctx.synchronize();
 try ctx.download(host_y, dy);
 ```
 
+### Streams, pinned memory and occupancy
+
+A default-stream-only API can run a demo but not a pipeline. Transfers and
+compute have to overlap, which needs a stream *and* page-locked host memory:
+
+```zig
+const stream = try ctx.createStream(true); // non-blocking
+defer stream.destroy();
+
+// Page-locked staging. This is not an optimisation detail — `cuMemcpy*Async`
+// issued from ordinary pageable memory is asynchronous in name only. The driver
+// stages it through an internal pinned buffer and blocks while doing so, so the
+// transfer does not overlap and the stream buys nothing.
+const hx = try ctx.allocPinned(f32, n);
+defer hx.free();
+
+try ctx.fillBytesAsync(dy, 0xff, stream);   // device-side memset
+try ctx.uploadAsync(dx, hx.items, stream);
+try scale.launchOn(stream, .{ .x = grid }, .{ .x = 256 }, 0, .{ dx, dy, k, n });
+try ctx.downloadAsync(hy.items, dy, stream);
+try stream.sync();
+```
+
+`ctx.zero(buf)` and `ctx.fillBytes(buf, v)` are device-side `cuMemsetD8`; an
+earlier version allocated a host buffer of zeros and transferred it.
+
+Occupancy and resource use come from the driver rather than from reading the
+generated PTX:
+
+```zig
+const res = try scale.resources();       // regs/thread, static shared, spill bytes
+const blocks = try scale.occupancy(256, 0);  // resident blocks per SM
+```
+
+This matters more than convenience. Dividing the SM's shared-memory budget by a
+kernel's shared usage — which is what you can do by hand from the PTX — ignores
+the register limit entirely, and goes stale the moment the kernel changes.
+`res.local_bytes` being non-zero means the kernel spilled to local memory, which
+is usually a performance bug worth failing a build over. `zoxide bench` now
+prints all of this per kernel.
+
 ### Why the signature is declared, not inferred
 
 `cuLaunchKernel` takes `void**` — one untyped pointer per argument. Nothing

@@ -47,7 +47,39 @@ pub const Error = cu.Error || error{
 };
 pub const Driver = cu.Driver;
 pub const Event = cu.Event;
+pub const Stream = cu.Stream;
 pub const DevicePtr = cu.CUdeviceptr;
+
+/// Page-locked host memory, typed.
+///
+/// This exists because the async copy API would otherwise be misleading:
+/// `cuMemcpy*Async` issued from ordinary pageable memory is asynchronous in name
+/// only. The driver has to stage such memory through an internal pinned buffer
+/// and blocks while it does, so the transfer does not overlap with compute and
+/// the stream API silently buys nothing. Transfers that need to overlap must
+/// come from here.
+pub fn Pinned(comptime T: type) type {
+    return struct {
+        inner: cu.PinnedHost,
+        items: []T,
+
+        const Self = @This();
+        pub const Elem = T;
+
+        pub fn free(self: Self) void {
+            self.inner.free();
+        }
+    };
+}
+
+/// Kernel resource use, from the loaded module rather than guessed from source.
+pub const Resources = struct {
+    regs_per_thread: u32,
+    shared_bytes: u64,
+    /// Local (spill) memory per thread. Non-zero means the kernel spilled.
+    local_bytes: u64,
+    max_threads_per_block: u32,
+};
 
 /// Launch geometry. `y`/`z` default to 1, which is what almost every launch
 /// wants and what is easy to get wrong when passing six bare integers.
@@ -131,6 +163,65 @@ pub const Context = struct {
         return self.inner.eventCreate();
     }
 
+    /// `non_blocking` streams do not serialise against the legacy default
+    /// stream, which is what you want when streams should genuinely overlap.
+    pub fn createStream(self: *Context, non_blocking: bool) Error!Stream {
+        return self.inner.streamCreate(non_blocking);
+    }
+
+    /// Page-locked host buffer of `len` items. See `Pinned` for why ordinary
+    /// memory will not do for overlapping transfers.
+    pub fn allocPinned(self: *Context, comptime T: type, len: usize) Error!Pinned(T) {
+        const raw = try self.inner.allocPinned(len * @sizeOf(T));
+        return .{ .inner = raw, .items = @as([*]T, @ptrCast(@alignCast(raw.bytes.ptr)))[0..len] };
+    }
+
+    /// Host to device on `stream`. `src` should be a `Pinned(T).items` slice for
+    /// the copy to actually overlap.
+    pub fn uploadAsync(self: *Context, dst: anytype, src: anytype, stream: Stream) Error!void {
+        const Elem = @TypeOf(dst).Elem;
+        const host: []const Elem = src;
+        if (host.len != dst.len) return error.LengthMismatch;
+        return self.inner.copyHtoDAsync(dst.ptr, std.mem.sliceAsBytes(host), stream);
+    }
+
+    /// Device to host on `stream`.
+    pub fn downloadAsync(self: *Context, dst: anytype, src: anytype, stream: Stream) Error!void {
+        const Elem = @TypeOf(src).Elem;
+        const host: []Elem = dst;
+        if (host.len != src.len) return error.LengthMismatch;
+        return self.inner.copyDtoHAsync(std.mem.sliceAsBytes(host), src.ptr, stream);
+    }
+
+    /// Device to device on `stream`. Element types and lengths must match.
+    pub fn copyAsync(self: *Context, dst: anytype, src: anytype, stream: Stream) Error!void {
+        if (@TypeOf(dst).Elem != @TypeOf(src).Elem) {
+            @compileError("copyAsync between Slice(" ++ @typeName(@TypeOf(src).Elem) ++
+                ") and Slice(" ++ @typeName(@TypeOf(dst).Elem) ++ ")");
+        }
+        if (dst.len != src.len) return error.LengthMismatch;
+        return self.inner.copyDtoDAsync(dst.ptr, src.ptr, dst.bytes(), stream);
+    }
+
+    /// Fill every byte of a device buffer, on the device.
+    pub fn fillBytes(self: *Context, s: anytype, value: u8) Error!void {
+        return self.inner.memsetD8(s.ptr, value, s.bytes());
+    }
+
+    pub fn fillBytesAsync(self: *Context, s: anytype, value: u8, stream: Stream) Error!void {
+        return self.inner.memsetD8Async(s.ptr, value, s.bytes(), stream);
+    }
+
+    /// Zero a device buffer. Now a device-side memset; it used to allocate a
+    /// host buffer of zeros and transfer it.
+    pub fn zero(self: *Context, s: anytype) Error!void {
+        return self.inner.memsetD8(s.ptr, 0, s.bytes());
+    }
+
+    pub fn zeroAsync(self: *Context, s: anytype, stream: Stream) Error!void {
+        return self.inner.memsetD8Async(s.ptr, 0, s.bytes(), stream);
+    }
+
     /// Load a module from cubin bytes.
     pub fn module(self: *Context, image: []const u8) Error!Module {
         return .{ .inner = try self.inner.module(image) };
@@ -175,15 +266,6 @@ pub const Context = struct {
         return self.inner.copyDtoH(std.mem.sliceAsBytes(host), src.ptr);
     }
 
-    /// Zero a device buffer by uploading zeros — the driver's async memset is not
-    /// bound yet, so this costs a host allocation and a transfer.
-    pub fn memsetZero(self: *Context, s: anytype, gpa: std.mem.Allocator) Error!void {
-        const T = @TypeOf(s).Elem;
-        const zeros = gpa.alloc(T, s.len) catch return error.OutOfMemory;
-        defer gpa.free(zeros);
-        @memset(zeros, std.mem.zeroes(T));
-        return self.inner.copyHtoD(s.ptr, std.mem.sliceAsBytes(zeros));
-    }
 };
 
 pub const Module = struct {
@@ -228,13 +310,43 @@ pub fn Kernel(comptime Signature: type) type {
 
         pub const params = param_types;
 
+        /// Resident blocks per SM at this block size, as the driver computes it
+        /// from the kernel's actual register and shared-memory use.
+        ///
+        /// Worth having rather than deriving: working it out by hand means
+        /// reading shared-memory totals out of the PTX and dividing by the SM
+        /// budget, which ignores the register limit entirely and is exactly the
+        /// sort of arithmetic that silently goes stale when a kernel changes.
+        pub fn occupancy(self: Self, block_size: u32, dynamic_shared: usize) Error!u32 {
+            return self.inner.occupancy(block_size, dynamic_shared);
+        }
+
+        /// Registers per thread, static shared bytes, spill bytes. A non-zero
+        /// `local_bytes` means the kernel spilled, which is usually a
+        /// performance bug worth failing a build over.
+        pub fn resources(self: Self) Error!Resources {
+            return .{
+                .regs_per_thread = @intCast(try self.inner.attr(.num_regs)),
+                .shared_bytes = try self.inner.attr(.shared_size_bytes),
+                .local_bytes = try self.inner.attr(.local_size_bytes),
+                .max_threads_per_block = @intCast(try self.inner.attr(.max_threads_per_block)),
+            };
+        }
+
         /// Launch with the argument tuple checked against the kernel signature.
         ///
         /// Pointer parameters take a `Slice(T)` whose element type must match
         /// the pointee; scalars must match exactly, with no implicit widening,
         /// because a u32 passed where the kernel reads u64 reads adjacent
         /// garbage and produces wrong answers rather than an error.
+        /// Launch on the default stream.
         pub fn launch(self: Self, grid: Dims, block: Dims, args: anytype) Error!void {
+            return self.launchOn(null, grid, block, 0, args);
+        }
+
+        /// Launch on `stream`, optionally with dynamic shared memory.
+        /// Pass a null stream for the legacy default stream.
+        pub fn launchOn(self: Self, stream: ?Stream, grid: Dims, block: Dims, dynamic_shared: u32, args: anytype) Error!void {
             const Args = @TypeOf(args);
             const args_info = switch (@typeInfo(Args)) {
                 .@"struct" => |s| s,
@@ -283,7 +395,17 @@ pub fn Kernel(comptime Signature: type) type {
                 ptrs[i] = @ptrCast(&packed_args[i]);
             }
 
-            return self.inner.launch(grid.x, grid.y, grid.z, block.x, block.y, block.z, &ptrs);
+            return self.inner.launchOn(
+                if (stream) |st| st.s else null,
+                grid.x,
+                grid.y,
+                grid.z,
+                block.x,
+                block.y,
+                block.z,
+                dynamic_shared,
+                &ptrs,
+            );
         }
     };
 }

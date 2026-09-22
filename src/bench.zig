@@ -152,6 +152,11 @@ pub fn benchMain(
         return 1;
     };
 
+    // Resource use and occupancy straight from the driver. Deriving these by
+    // reading shared-memory totals out of the PTX ignores the register limit and
+    // goes stale as soon as the kernel changes.
+    reportOccupancy(func, if (hgemm or regblocked) 128 else 1024, dev_info, out) catch {};
+
     if (hgemm) {
         return runHgemm(gpa, &ctx, func, n, args.iters, out, hgemm_tile_m, hgemm_tile_n, dev_info);
     }
@@ -251,6 +256,26 @@ fn finishVerify(gpa: std.mem.Allocator, ctx: *cu.Context, dc: u64, a: []f32, b: 
 }
 
 const h20_fp16_peak_gflops: f64 = 148000;
+
+fn reportOccupancy(func: cu.Function, block: u32, dev_info: ?cu.Context.Info, out: *std.Io.Writer) !void {
+    const regs = try func.attr(.num_regs);
+    const shared = try func.attr(.shared_size_bytes);
+    const spill = try func.attr(.local_size_bytes);
+    const blocks = try func.occupancy(block, 0);
+    try out.print("kernel: {d} regs/thread, {d} B static shared, {d} blocks/SM at {d} threads", .{ regs, shared, blocks, block });
+    if (dev_info) |di| {
+        const threads = blocks * block;
+        try out.print(" ({d}/2048 threads = {d:.0}% occupancy, {d} SMs)", .{
+            threads,
+            @as(f64, @floatFromInt(threads)) / 2048.0 * 100,
+            di.sms,
+        });
+    }
+    try out.print("\n", .{});
+    if (spill != 0) {
+        try out.print("  warning: {d} B/thread spilled to local memory\n", .{spill});
+    }
+}
 
 /// HGEMM harness: f16 inputs (small ints, exact in f16), f32 accumulate.
 fn runHgemm(gpa: std.mem.Allocator, ctx: *cu.Context, func: cu.Function, n: usize, iters: u32, out: *std.Io.Writer, tile_m: usize, tile_n: usize, dev_info: ?cu.Context.Info) !u8 {

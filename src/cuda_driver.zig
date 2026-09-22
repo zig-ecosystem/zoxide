@@ -23,6 +23,11 @@ pub const CUevent = ?*anyopaque;
 ///   500 NOT_FOUND, 700 NOT_READY, 701 ILLEGAL_ADDRESS,
 ///   719 LAUNCH_FAILURE, 999 UNKNOWN.
 
+/// `CUDA_ERROR_NOT_READY`. Returned by `cuStreamQuery` for work still in
+/// flight, which is a status rather than a failure, so it must not go through
+/// `check`.
+pub const cuda_error_not_ready: c_int = 600;
+
 pub const Error = error{
     CudaInit,
     CudaCall,
@@ -49,6 +54,24 @@ pub const Driver = struct {
     cuMemFree_v2: *const fn (dptr: CUdeviceptr) callconv(.c) c_int,
     cuMemcpyHtoD_v2: *const fn (dstDevice: CUdeviceptr, srcHost: ?*const anyopaque, byteCount: usize) callconv(.c) c_int,
     cuMemcpyDtoH_v2: *const fn (dstHost: ?*anyopaque, srcDevice: CUdeviceptr, byteCount: usize) callconv(.c) c_int,
+    cuMemcpyHtoDAsync_v2: *const fn (dstDevice: CUdeviceptr, srcHost: ?*const anyopaque, byteCount: usize, hStream: CUstream) callconv(.c) c_int,
+    cuMemcpyDtoHAsync_v2: *const fn (dstHost: ?*anyopaque, srcDevice: CUdeviceptr, byteCount: usize, hStream: CUstream) callconv(.c) c_int,
+    cuMemcpyDtoDAsync_v2: *const fn (dstDevice: CUdeviceptr, srcDevice: CUdeviceptr, byteCount: usize, hStream: CUstream) callconv(.c) c_int,
+    cuMemsetD8_v2: *const fn (dstDevice: CUdeviceptr, uc: u8, n: usize) callconv(.c) c_int,
+    cuMemsetD8Async: *const fn (dstDevice: CUdeviceptr, uc: u8, n: usize, hStream: CUstream) callconv(.c) c_int,
+    cuMemsetD32_v2: *const fn (dstDevice: CUdeviceptr, ui: c_uint, n: usize) callconv(.c) c_int,
+    // Page-locked host memory. Without it `cuMemcpy*Async` cannot actually
+    // overlap: the driver has to stage pageable memory through an internal
+    // pinned buffer and blocks while doing so, so the call is asynchronous in
+    // name only.
+    cuMemHostAlloc: *const fn (pp: *?*anyopaque, bytesize: usize, flags: c_uint) callconv(.c) c_int,
+    cuMemFreeHost: *const fn (p: ?*anyopaque) callconv(.c) c_int,
+    cuStreamCreate: *const fn (phStream: *CUstream, flags: c_uint) callconv(.c) c_int,
+    cuStreamDestroy_v2: *const fn (hStream: CUstream) callconv(.c) c_int,
+    cuStreamSynchronize: *const fn (hStream: CUstream) callconv(.c) c_int,
+    cuStreamQuery: *const fn (hStream: CUstream) callconv(.c) c_int,
+    cuOccupancyMaxActiveBlocksPerMultiprocessor: *const fn (numBlocks: *c_int, func: CUfunction, blockSize: c_int, dynamicSMemSize: usize) callconv(.c) c_int,
+    cuFuncGetAttribute: *const fn (pi: *c_int, attrib: c_int, hfunc: CUfunction) callconv(.c) c_int,
     cuLaunchKernel: *const fn (
         f: CUfunction,
         gridDimX: c_uint,
@@ -219,11 +242,87 @@ pub const Context = struct {
         try self.drv.check(self.drv.cuCtxSynchronize());
     }
 
+    /// `non_blocking` streams do not synchronise with the legacy default
+    /// stream, which is what you want when several streams should genuinely run
+    /// concurrently.
+    pub fn streamCreate(self: *Context, non_blocking: bool) Error!Stream {
+        var st: CUstream = null;
+        try self.drv.check(self.drv.cuStreamCreate(&st, if (non_blocking) 1 else 0));
+        return .{ .drv = self.drv, .s = st };
+    }
+
+    /// Page-locked host memory. `cuMemcpy*Async` from ordinary pageable memory
+    /// is asynchronous in name only — the driver stages it through an internal
+    /// pinned buffer and blocks — so overlapping transfers with compute needs
+    /// allocations from here.
+    pub fn allocPinned(self: *Context, bytes: usize) Error!PinnedHost {
+        var p: ?*anyopaque = null;
+        try self.drv.check(self.drv.cuMemHostAlloc(&p, bytes, 0));
+        return .{ .drv = self.drv, .bytes = @as([*]u8, @ptrCast(p.?))[0..bytes] };
+    }
+
+    pub fn copyHtoDAsync(self: *Context, dst: CUdeviceptr, src: []const u8, stream: Stream) Error!void {
+        try self.drv.check(self.drv.cuMemcpyHtoDAsync_v2(dst, src.ptr, src.len, stream.s));
+    }
+
+    pub fn copyDtoHAsync(self: *Context, dst: []u8, src: CUdeviceptr, stream: Stream) Error!void {
+        try self.drv.check(self.drv.cuMemcpyDtoHAsync_v2(dst.ptr, src, dst.len, stream.s));
+    }
+
+    pub fn copyDtoDAsync(self: *Context, dst: CUdeviceptr, src: CUdeviceptr, bytes: usize, stream: Stream) Error!void {
+        try self.drv.check(self.drv.cuMemcpyDtoDAsync_v2(dst, src, bytes, stream.s));
+    }
+
+    pub fn memsetD8(self: *Context, dst: CUdeviceptr, value: u8, bytes: usize) Error!void {
+        try self.drv.check(self.drv.cuMemsetD8_v2(dst, value, bytes));
+    }
+
+    pub fn memsetD8Async(self: *Context, dst: CUdeviceptr, value: u8, bytes: usize, stream: Stream) Error!void {
+        try self.drv.check(self.drv.cuMemsetD8Async(dst, value, bytes, stream.s));
+    }
+
+    /// 32-bit pattern fill; `n` counts words, not bytes.
+    pub fn memsetD32(self: *Context, dst: CUdeviceptr, value: u32, n: usize) Error!void {
+        try self.drv.check(self.drv.cuMemsetD32_v2(dst, value, n));
+    }
+
     pub fn eventCreate(self: *Context) Error!Event {
         try self.drv.check(self.drv.cuCtxSetCurrent(self.ctx));
         var ev: CUevent = null;
         try self.drv.check(self.drv.cuEventCreate(&ev, 0)); // CU_EVENT_DEFAULT
         return .{ .drv = self.drv, .ev = ev };
+    }
+};
+
+pub const Stream = struct {
+    drv: *Driver,
+    s: CUstream,
+
+    pub fn sync(self: Stream) Error!void {
+        try self.drv.check(self.drv.cuStreamSynchronize(self.s));
+    }
+
+    /// True when all previously enqueued work has completed. Unlike the other
+    /// wrappers this treats `CUDA_ERROR_NOT_READY` as a value, not an error.
+    pub fn done(self: Stream) Error!bool {
+        const r = self.drv.cuStreamQuery(self.s);
+        if (r == cuda_error_not_ready) return false;
+        try self.drv.check(r);
+        return true;
+    }
+
+    pub fn destroy(self: Stream) void {
+        _ = self.drv.cuStreamDestroy_v2(self.s);
+    }
+};
+
+/// Page-locked host allocation, required for `cuMemcpy*Async` to overlap.
+pub const PinnedHost = struct {
+    drv: *Driver,
+    bytes: []u8,
+
+    pub fn free(self: PinnedHost) void {
+        _ = self.drv.cuMemFreeHost(self.bytes.ptr);
     }
 };
 
@@ -266,6 +365,38 @@ pub const Function = struct {
     drv: *Driver,
     f: CUfunction,
 
+    /// `CUfunction_attribute` values worth reporting. Register count and static
+    /// shared memory are what actually determine occupancy, so having them
+    /// removes the need to work it out from the PTX by hand.
+    pub const Attr = enum(c_int) {
+        max_threads_per_block = 0,
+        shared_size_bytes = 1,
+        const_size_bytes = 2,
+        local_size_bytes = 3,
+        num_regs = 4,
+        ptx_version = 5,
+        binary_version = 6,
+    };
+
+    pub fn attr(self: Function, a: Attr) Error!u64 {
+        var v: c_int = 0;
+        try self.drv.check(self.drv.cuFuncGetAttribute(&v, @intFromEnum(a), self.f));
+        return @intCast(@max(v, 0));
+    }
+
+    /// Blocks of `block_size` threads that can be resident per SM, as the
+    /// driver computes it from this kernel's register and shared-memory use.
+    pub fn occupancy(self: Function, block_size: u32, dynamic_shared: usize) Error!u32 {
+        var n: c_int = 0;
+        try self.drv.check(self.drv.cuOccupancyMaxActiveBlocksPerMultiprocessor(
+            &n,
+            self.f,
+            @intCast(block_size),
+            dynamic_shared,
+        ));
+        return @intCast(@max(n, 0));
+    }
+
     /// params: one pointer per kernel argument, each pointing at the
     /// argument value (kernelParams convention of cuLaunchKernel).
     pub fn launch(
@@ -278,6 +409,22 @@ pub const Function = struct {
         block_z: u32,
         params: []?*anyopaque,
     ) Error!void {
+        return self.launchOn(null, grid_x, grid_y, grid_z, block_x, block_y, block_z, 0, params);
+    }
+
+    /// `stream` of null is the legacy default stream.
+    pub fn launchOn(
+        self: Function,
+        stream: CUstream,
+        grid_x: u32,
+        grid_y: u32,
+        grid_z: u32,
+        block_x: u32,
+        block_y: u32,
+        block_z: u32,
+        dynamic_shared: u32,
+        params: []?*anyopaque,
+    ) Error!void {
         try self.drv.check(self.drv.cuLaunchKernel(
             self.f,
             grid_x,
@@ -286,8 +433,8 @@ pub const Function = struct {
             block_x,
             block_y,
             block_z,
-            0, // sharedMemBytes
-            null, // default stream
+            dynamic_shared,
+            stream,
             if (params.len > 0) @ptrCast(params.ptr) else null,
             null, // extra
         ));
