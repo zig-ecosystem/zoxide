@@ -213,7 +213,23 @@ fn assemblePtx(gpa: std.mem.Allocator, io: std.Io, env: *std.process.Environ.Map
     });
     defer gpa.free(result.stdout);
     defer gpa.free(result.stderr);
-    if (!termOk(result.term)) return error.PtxasFailed;
+    if (!termOk(result.term)) {
+        // ptxas has already said exactly what is wrong — an unsupported
+        // instruction for the target, a bad operand, an arch mismatch. Discarding
+        // that and reporting "failed to assemble" made the caller print "is ptxas
+        // available?", which is actively misleading when ptxas is present and
+        // simply rejected the input. Assembling a wgmma kernel for sm_90 instead
+        // of sm_90a produced precisely that.
+        const diag = std.mem.trim(u8, result.stderr, " \t\r\n");
+        if (diag.len != 0) {
+            std.debug.print("ptxas: {s}\n", .{diag});
+        }
+        const extra = std.mem.trim(u8, result.stdout, " \t\r\n");
+        if (extra.len != 0) {
+            std.debug.print("ptxas: {s}\n", .{extra});
+        }
+        return error.PtxasRejected;
+    }
 }
 
 /// Version tag the scaffold points at for `zig fetch --save`. Bump with releases.

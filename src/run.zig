@@ -65,8 +65,13 @@ pub fn run(
         const p = try std.fmt.allocPrint(gpa, "/tmp/zoxide-run-{d}.cubin", .{std.c.getpid()});
         tmp_cubin = p;
         try out.print("assembling {s} -> {s} (ptxas, {s})\n", .{ args.input, p, args.arch });
-        assemblePtx(gpa, io, env, args.input, p, args.arch, args.max_regs) catch {
-            try out.print("error: failed to assemble PTX (is ptxas available? see 'zoxide doctor')\n", .{});
+        assemblePtx(gpa, io, env, args.input, p, args.arch, args.max_regs) catch |e| {
+            switch (e) {
+                // ptxas prints its own diagnostics before this point.
+                error.PtxasRejected => try out.print("error: ptxas rejected {s} for {s} (diagnostics above)\n", .{ args.input, args.arch }),
+                error.PtxasNotFound => try out.print("error: ptxas not found; see 'zoxide doctor'\n", .{}),
+                else => try out.print("error: could not assemble PTX: {s}\n", .{@errorName(e)}),
+            }
             return 1;
         };
         cubin_path = p;

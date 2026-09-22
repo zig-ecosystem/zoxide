@@ -102,9 +102,13 @@ fi
 if [ "$QUICK" = 1 ]; then
     record SKIP "bench/sgemm_swz" "--quick"
 elif have_ptx sgemm_swz; then
+    # n=512 on purpose: this is a correctness smoke test, not a measurement. At
+    # that size only 16 blocks exist for 78 SMs, so the GFLOPS figure is far below
+    # what the same kernel reaches at n=4096 and should not be read as a
+    # regression. The label says so.
     out=$("$ZOXIDE" bench "$PTXDIR/sgemm_swz.ptx" --n 512 --iters 2 2>&1)
     if echo "$out" | grep -q '^PASS'; then
-        record PASS "bench/sgemm_swz" "$(echo "$out" | grep -m1 'GFLOPS')"
+        record PASS "bench/sgemm_swz" "smoke n=512 (not a perf number): $(echo "$out" | grep -m1 'GFLOPS')"
     else
         record FAIL "bench/sgemm_swz" "$(echo "$out" | tail -1)"
     fi
