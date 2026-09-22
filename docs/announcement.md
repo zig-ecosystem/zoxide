@@ -6,6 +6,8 @@
 
 ## v0.0.10-alpha — host API for real pipelines（2026-09-21）
 
+![register sweep](assets/register-sweep.svg)
+
 这轮没有性能数字，做的是**别人能不能用起来**。
 
 此前下游用户编出 kernel 就断了：driver 绑定在 CLI 内部，想跑自己的 kernel 得自己写一遍 libcuda FFI。现在有 `zoxide_host` 模块，host 和 device 同包，签名声明一次两边共享。
