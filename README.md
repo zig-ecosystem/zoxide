@@ -473,7 +473,7 @@ errors to build time and skips the JIT, at the cost of pinning one architecture.
 Easiest path — one bundle, three commands on the pod:
 
 ```sh
-curl -LO https://github.com/zig-ecosystem/zoxide/releases/download/v0.0.9-alpha/zoxide-linux-x64.tar.gz
+curl -LO https://github.com/zig-ecosystem/zoxide/releases/download/v0.0.10-alpha/zoxide-linux-x64.tar.gz
 tar xzf zoxide-linux-x64.tar.gz   # ./zoxide ./kernels/ ./scripts/
 ./scripts/pod-verify.sh ./zoxide ./kernels
 ```
