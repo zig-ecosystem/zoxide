@@ -100,7 +100,7 @@ been eliminated by experiment on H20 (details in `docs/verification/`):
 | --- | --- |
 | pipeline draining the tensor core | eliminated — fixing it was worth 4pp |
 | global traffic / DRAM bandwidth | eliminated — throughput is flat across the L2 boundary (57.9% at 36 MB working set, 58.3% at 64 MB, 57.8% at 256 MB) |
-| too few independent warpgroups | eliminated — 12 blocks resident per SM is 12 independent wgmma streams, 75% thread occupancy |
+| too few independent warpgroups | **retracted** — that rested on 12 blocks resident per SM, which I had derived by dividing the SM's shared-memory budget by the kernel's usage. The driver's own figure is 4 blocks at 25% occupancy: registers bind, not shared memory. 4 streams is not evidence of sufficient concurrency, so this is open again |
 | **per-instruction efficiency of n16** | **the only candidate left** |
 
 ### Correction, and why the case is now stronger

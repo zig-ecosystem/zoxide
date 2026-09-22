@@ -424,12 +424,17 @@ const res = try scale.resources();       // regs/thread, static shared, spill by
 const blocks = try scale.occupancy(256, 0);  // resident blocks per SM
 ```
 
-This matters more than convenience. Dividing the SM's shared-memory budget by a
-kernel's shared usage — which is what you can do by hand from the PTX — ignores
-the register limit entirely, and goes stale the moment the kernel changes.
+This matters more than convenience, and there is a worked example. For
+`hgemm_wgmma3` I had derived "12 blocks resident per SM" by dividing the SM's
+228 KB of shared memory by the kernel's 18 KB. The driver reports **4**: at 98
+registers per thread the register file binds long before shared memory does, so
+the hand calculation was measuring the wrong limit and the real occupancy is 25%,
+not 75%. That error had propagated into a performance conclusion before the API
+existed to catch it.
 `res.local_bytes` being non-zero means the kernel spilled to local memory, which
 is usually a performance bug worth failing a build over. `zoxide bench` now
-prints all of this per kernel.
+prints all of this per kernel, and `--maxrregcount N` passes a register cap to
+ptxas for trading spills against occupancy.
 
 ### Why the signature is declared, not inferred
 

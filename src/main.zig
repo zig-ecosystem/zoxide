@@ -178,13 +178,34 @@ fn cmdCubin(gpa: std.mem.Allocator, io: std.Io, env: *std.process.Environ.Map, a
 }
 
 /// Assemble PTX to cubin via ptxas (shared by `cubin` and `run`).
-fn assemblePtx(gpa: std.mem.Allocator, io: std.Io, env: *std.process.Environ.Map, in_ptx: []const u8, out_cubin: []const u8, arch: []const u8) !void {
+fn assemblePtx(gpa: std.mem.Allocator, io: std.Io, env: *std.process.Environ.Map, in_ptx: []const u8, out_cubin: []const u8, arch: []const u8, max_regs: ?u32) !void {
     const ptxas = findPtxas(gpa, io, env) orelse return error.PtxasNotFound;
     defer gpa.free(ptxas);
     const arch_arg = try std.fmt.allocPrint(gpa, "-arch={s}", .{arch});
     defer gpa.free(arch_arg);
+    // Capping registers per thread trades spills for occupancy. Worth having as
+    // a knob because register pressure, not shared memory, is what usually binds
+    // a tensor-core kernel's residency, and the tradeoff is not predictable from
+    // source.
+    var argv_buf: [6][]const u8 = undefined;
+    var argc: usize = 0;
+    argv_buf[argc] = ptxas;
+    argc += 1;
+    argv_buf[argc] = arch_arg;
+    argc += 1;
+    var reg_arg_buf: [32]u8 = undefined;
+    if (max_regs) |m| {
+        argv_buf[argc] = try std.fmt.bufPrint(&reg_arg_buf, "--maxrregcount={d}", .{m});
+        argc += 1;
+    }
+    argv_buf[argc] = "-o";
+    argc += 1;
+    argv_buf[argc] = out_cubin;
+    argc += 1;
+    argv_buf[argc] = in_ptx;
+    argc += 1;
     const result = try std.process.run(gpa, io, .{
-        .argv = &.{ ptxas, arch_arg, "-o", out_cubin, in_ptx },
+        .argv = argv_buf[0..argc],
     });
     defer gpa.free(result.stdout);
     defer gpa.free(result.stderr);
@@ -222,6 +243,9 @@ fn cmdRun(gpa: std.mem.Allocator, io: std.Io, env: *std.process.Environ.Map, arg
                 return 1;
             }
             ra.arch = v;
+        } else if (std.mem.eql(u8, a, "--maxrregcount")) {
+            const v = needValue(args, &i) orelse return usageErr("run: --maxrregcount requires a value");
+            ra.max_regs = std.fmt.parseInt(u32, v, 10) catch return usageErr("run: --maxrregcount must be a positive integer");
         } else if (!have_input) {
             ra.input = a;
             have_input = true;
@@ -268,6 +292,10 @@ fn cmdBench(gpa: std.mem.Allocator, io: std.Io, env: *std.process.Environ.Map, a
                 return 1;
             }
             ba.arch = args[i];
+        } else if (std.mem.eql(u8, a, "--maxrregcount")) {
+            i += 1;
+            if (i >= args.len) return usageErr("bench: --maxrregcount requires a value");
+            ba.max_regs = std.fmt.parseInt(u32, args[i], 10) catch return usageErr("bench: --maxrregcount must be a positive integer");
         } else if (!have_input) {
             ba.input = a;
             have_input = true;

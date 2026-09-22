@@ -11,6 +11,10 @@ pub const BenchArgs = struct {
     iters: u32 = 10,
     kernel_name: ?[]const u8 = null,
     arch: []const u8 = "sm_90",
+    /// ptxas --maxrregcount. Caps registers per thread, trading spills for
+    /// occupancy; register pressure is usually what binds a tensor-core
+    /// kernel's residency, not shared memory.
+    max_regs: ?u32 = null,
 };
 
 fn xorshift(state: *u32) u32 {
@@ -35,7 +39,7 @@ pub fn benchMain(
     io: std.Io,
     env: *std.process.Environ.Map,
     args: BenchArgs,
-    assemblePtx: *const fn (gpa: std.mem.Allocator, io: std.Io, env: *std.process.Environ.Map, in_ptx: []const u8, out_cubin: []const u8, arch: []const u8) anyerror!void,
+    assemblePtx: *const fn (gpa: std.mem.Allocator, io: std.Io, env: *std.process.Environ.Map, in_ptx: []const u8, out_cubin: []const u8, arch: []const u8, max_regs: ?u32) anyerror!void,
     out: *std.Io.Writer,
 ) !u8 {
     const stem = std.fs.path.stem(std.fs.path.basename(args.input));
@@ -83,7 +87,7 @@ pub fn benchMain(
         const p = try std.fmt.allocPrint(gpa, "/tmp/zoxide-bench-{d}.cubin", .{std.c.getpid()});
         tmp_cubin = p;
         try out.print("assembling {s} -> {s} (ptxas, {s})\n", .{ args.input, p, args.arch });
-        assemblePtx(gpa, io, env, args.input, p, args.arch) catch {
+        assemblePtx(gpa, io, env, args.input, p, args.arch, args.max_regs) catch {
             try out.print("error: failed to assemble PTX (is ptxas available? see 'zoxide doctor')\n", .{});
             return 1;
         };
