@@ -185,3 +185,59 @@ jobs:
 
       - name: doctor degrades gracefully without GPU
         run: ./zig-out/bin/zoxide doctor
+
+  # Real-hardware job. Gated on a repository variable rather than only on runner
+  # labels, because a job targeting an unavailable label queues indefinitely
+  # instead of being skipped. Set HAS_GPU_RUNNER=true once a self-hosted runner
+  # with an NVIDIA GPU is registered with the `gpu` label.
+  #
+  # This exists because of a concrete miss: tests/downstream looked up the wrong
+  # kernel symbol for two commits. Nothing on a machine without a GPU can detect
+  # that — the package compiles, links and exits cleanly, and only an actual
+  # launch notices. Everything below is exactly the class of bug the CPU job
+  # cannot see.
+  gpu:
+    if: vars.HAS_GPU_RUNNER == 'true'
+    runs-on: [self-hosted, gpu]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+      - name: Build CLI and kernels
+        run: |
+          zig build
+          zig build kernels
+      - name: doctor sees the GPU
+        run: |
+          set -euo pipefail
+          ./zig-out/bin/zoxide doctor --arch sm_90 | tee /tmp/doctor.txt
+          grep -q '^\[ok  \] gpu:' /tmp/doctor.txt
+      - name: Full pod verification
+        run: |
+          set -euo pipefail
+          ./scripts/pod-verify.sh ./zig-out/bin/zoxide zig-out/kernels
+      - name: Downstream package launches for real
+        run: |
+          set -euo pipefail
+          zig build run
+        working-directory: tests/downstream
+      - name: Scaffolded package launches for real
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/gpu-scaffold && mkdir -p /tmp/gpu-scaffold
+          ./zig-out/bin/zoxide new gpuscaffold --dir /tmp/gpu-scaffold/s --zoxide-path "$PWD"
+          cd /tmp/gpu-scaffold/s
+          zig build run
+      - name: Headline kernel still exact
+        run: |
+          set -euo pipefail
+          ./zig-out/bin/zoxide bench zig-out/kernels/hgemm_wgmma3.ptx \
+            --n 4096 --iters 10 --arch sm_90a | tee /tmp/hgemm.txt
+          grep -q '^PASS' /tmp/hgemm.txt
+          # Guard the property, not the number: the accumulators living in
+          # registers is the entire point of this variant, and a spill silently
+          # costs about half the throughput.
+          if grep -q 'spilled to local memory' /tmp/hgemm.txt; then
+            echo "hgemm_wgmma3 spilled"; exit 1
+          fi

@@ -2,6 +2,12 @@
 
 const std = @import("std");
 const cu = @import("cuda_driver.zig");
+// bench launches through the same public host API it ships, so the typed-launch
+// path is exercised by the project's own tooling and not only by a test. It also
+// means a kernel whose parameters change without examples_abi following is a
+// compile error here.
+const gpu = @import("host.zig");
+const api = @import("examples_abi.zig");
 
 const h20_fp32_peak_gflops: f64 = 44000;
 
@@ -130,7 +136,7 @@ pub fn benchMain(
     };
     defer drv.unload();
 
-    var ctx = cu.Context.init(&drv) catch {
+    var ctx = gpu.Context.init(&drv) catch {
         try out.print("error: CUDA init failed: {s}\n", .{drv.lastError()});
         return 1;
     };
@@ -151,23 +157,27 @@ pub fn benchMain(
     };
     const namez = try gpa.dupeZ(u8, kernel_name);
     defer gpa.free(namez);
-    const func = mod.function(namez) catch {
-        try out.print("error: kernel '{s}' not found: {s}\n", .{ kernel_name, drv.lastError() });
-        return 1;
-    };
 
     // Resource use and occupancy straight from the driver. Deriving these by
     // reading shared-memory totals out of the PTX ignores the register limit and
     // goes stale as soon as the kernel changes.
-    reportOccupancy(func, if (hgemm or regblocked) 128 else 1024, dev_info, out) catch {};
 
     if (hgemm) {
-        return runHgemm(gpa, &ctx, func, n, args.iters, out, hgemm_tile_m, hgemm_tile_n, dev_info);
+        const kern = mod.kernel(api.hgemm, namez) catch |e| {
+            try out.print("error: {s}: {s}\n", .{ @errorName(e), drv.lastError() });
+            return 1;
+        };
+        reportOccupancy(kern.inner, 128, dev_info, out) catch {};
+        return runHgemm(gpa, &ctx, kern, n, args.iters, out, hgemm_tile_m, hgemm_tile_n, dev_info);
     }
+    const kern = mod.kernel(api.sgemm, namez) catch |e| {
+        try out.print("error: {s}: {s}\n", .{ @errorName(e), drv.lastError() });
+        return 1;
+    };
+    reportOccupancy(kern.inner, if (regblocked) 128 else 1024, dev_info, out) catch {};
 
     // Host buffers.
     const elems = n * n;
-    const bytes = elems * @sizeOf(f32);
     const a = try gpa.alloc(f32, elems);
     defer gpa.free(a);
     const b = try gpa.alloc(f32, elems);
@@ -178,21 +188,18 @@ pub fn benchMain(
     fillRandom(b, 0x9abcdef0);
     @memset(c, 0);
 
-    const da = try ctx.alloc(bytes);
-    defer ctx.free(da);
-    const db = try ctx.alloc(bytes);
-    defer ctx.free(db);
-    const dc = try ctx.alloc(bytes);
-    defer ctx.free(dc);
-    try ctx.copyHtoD(da, std.mem.sliceAsBytes(a));
-    try ctx.copyHtoD(db, std.mem.sliceAsBytes(b));
-    try ctx.copyHtoD(dc, std.mem.sliceAsBytes(c));
+    const da = try ctx.allocSlice(f32, elems);
+    defer ctx.freeSlice(da);
+    const db = try ctx.allocSlice(f32, elems);
+    defer ctx.freeSlice(db);
+    const dc = try ctx.allocSlice(f32, elems);
+    defer ctx.freeSlice(dc);
+    try ctx.upload(da, a);
+    try ctx.upload(db, b);
+    try ctx.zero(dc);
 
-    var arg_a = da;
-    var arg_b = db;
-    var arg_c = dc;
-    var arg_n: u32 = @intCast(n);
-    var params = [_]?*anyopaque{ &arg_a, &arg_b, &arg_c, &arg_n };
+    // Checked against api.sgemm at compile time.
+    const kargs = .{ da, db, dc, @as(u32, @intCast(n)) };
 
     const grid_x: u32 = @intCast((n + 31) / 32);
     const grid_y: u32 = grid_x;
@@ -207,11 +214,11 @@ pub fn benchMain(
     while (it < args.iters) : (it += 1) {
         try start.record();
         if (regblocked) {
-            try func.launch(grid_reg, grid_reg, 1, 16, 16, 1, &params);
+            try kern.launch(.{ .x = grid_reg, .y = grid_reg }, .{ .x = 16, .y = 16 }, kargs);
         } else if (tiled) {
-            try func.launch(grid_x, grid_y, 1, 32, 32, 1, &params);
+            try kern.launch(.{ .x = grid_x, .y = grid_y }, .{ .x = 32, .y = 32 }, kargs);
         } else {
-            try func.launch(@intCast((elems + 255) / 256), 1, 1, 256, 1, 1, &params);
+            try kern.launch(.{ .x = @intCast((elems + 255) / 256) }, .{ .x = 256 }, kargs);
         }
         try stop.record();
         try stop.sync();
@@ -228,10 +235,10 @@ pub fn benchMain(
 
 }
 
-fn finishVerify(gpa: std.mem.Allocator, ctx: *cu.Context, dc: u64, a: []f32, b: []f32, c: []f32, n: usize, out: *std.Io.Writer) !u8 {
+fn finishVerify(gpa: std.mem.Allocator, ctx: *gpu.Context, dc: gpu.Slice(f32), a: []f32, b: []f32, c: []f32, n: usize, out: *std.Io.Writer) !u8 {
     _ = gpa;
     const elems = n * n;
-    try ctx.copyDtoH(std.mem.sliceAsBytes(c), dc);
+    try ctx.download(c, dc);
     var bad: usize = 0;
     var max_rel: f64 = 0;
     var si: usize = 0;
@@ -282,7 +289,7 @@ fn reportOccupancy(func: cu.Function, block: u32, dev_info: ?cu.Context.Info, ou
 }
 
 /// HGEMM harness: f16 inputs (small ints, exact in f16), f32 accumulate.
-fn runHgemm(gpa: std.mem.Allocator, ctx: *cu.Context, func: cu.Function, n: usize, iters: u32, out: *std.Io.Writer, tile_m: usize, tile_n: usize, dev_info: ?cu.Context.Info) !u8 {
+fn runHgemm(gpa: std.mem.Allocator, ctx: *gpu.Context, kern: gpu.Kernel(api.hgemm), n: usize, iters: u32, out: *std.Io.Writer, tile_m: usize, tile_n: usize, dev_info: ?cu.Context.Info) !u8 {
     const elems = n * n;
     const ah = try gpa.alloc(f16, elems);
     defer gpa.free(ah);
@@ -308,20 +315,22 @@ fn runHgemm(gpa: std.mem.Allocator, ctx: *cu.Context, func: cu.Function, n: usiz
 
     const hbytes = elems * @sizeOf(f16);
     const cbytes = elems * @sizeOf(f32);
-    const da = try ctx.alloc(hbytes);
-    defer ctx.free(da);
-    const db = try ctx.alloc(hbytes);
-    defer ctx.free(db);
-    const dc = try ctx.alloc(cbytes);
-    defer ctx.free(dc);
-    try ctx.copyHtoD(da, std.mem.sliceAsBytes(ah));
-    try ctx.copyHtoD(db, std.mem.sliceAsBytes(bh));
+    const da = try ctx.allocSlice(f16, elems);
+    defer ctx.freeSlice(da);
+    const db = try ctx.allocSlice(f16, elems);
+    defer ctx.freeSlice(db);
+    const dc = try ctx.allocSlice(f32, elems);
+    defer ctx.freeSlice(dc);
+    try ctx.upload(da, ah);
+    try ctx.upload(db, bh);
+    // Poisoned rather than zeroed: a kernel that writes nothing then cannot
+    // pass verification by leaving plausible zeros behind.
+    try ctx.fillBytes(dc, 0xff);
+    _ = .{ hbytes, cbytes };
 
-    var arg_a = da;
-    var arg_b = db;
-    var arg_c = dc;
-    var arg_n: u32 = @intCast(n);
-    var params = [_]?*anyopaque{ &arg_a, &arg_b, &arg_c, &arg_n };
+    // Slice(f16) for A and B, Slice(f32) for C, checked against api.hgemm —
+    // which is also what the kernels assert their own definitions against.
+    const kargs = .{ da, db, dc, @as(u32, @intCast(n)) };
     // grid.x walks N, grid.y walks M.
     const grid_x: u32 = @intCast((n + tile_n - 1) / tile_n);
     const grid_y: u32 = @intCast((n + tile_m - 1) / tile_m);
@@ -334,7 +343,7 @@ fn runHgemm(gpa: std.mem.Allocator, ctx: *cu.Context, func: cu.Function, n: usiz
     var it: u32 = 0;
     while (it < iters) : (it += 1) {
         try start.record();
-        try func.launch(grid_x, grid_y, 1, 128, 1, 1, &params);
+        try kern.launch(.{ .x = grid_x, .y = grid_y }, .{ .x = 128 }, kargs);
         try stop.record();
         try stop.sync();
         const ms = try start.elapsedMs(stop);

@@ -508,6 +508,17 @@ tar xzf zoxide-linux-x64.tar.gz   # ./zoxide ./kernels/ ./scripts/
 ./scripts/pod-verify.sh ./zoxide ./kernels
 ```
 
+CI has a second job for real hardware, gated on a repository variable
+(`HAS_GPU_RUNNER=true`) rather than on runner labels alone — a job targeting an
+unavailable label queues indefinitely instead of being skipped. It runs doctor,
+the full sweep, `zig build run` in both `tests/downstream` and a freshly
+scaffolded package, and asserts the headline kernel stays exact and unspilled.
+
+That job exists because of a concrete miss: `tests/downstream` looked up the wrong
+kernel symbol for two commits. Nothing on a machine without a GPU can detect that
+— the package compiles, links and exits cleanly, and only an actual launch
+notices.
+
 `scripts/pod-verify.sh [zoxide-binary] [ptx-dir] [--quick]` runs doctor →
 run × 4 examples → sgemm_swz bench smoke → intrinsics_smoke ptxas assembly,
 printing one PASS/FAIL/SKIP line per check plus a totals summary, and writes

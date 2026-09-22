@@ -1,4 +1,5 @@
 const cuda = @import("cuda");
+const api = @import("examples_abi");
 const asmgen = cuda.asm_gen;
 
 /// HGEMM via tensor-core mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32.
@@ -114,5 +115,8 @@ pub fn hgemmMma(a: [*]const f16, b: [*]const f16, c: [*]f32, n: u32) callconv(.k
 }
 
 comptime {
+    // Drift from the signature `zoxide bench` launches through is a compile
+    // error here rather than a silently mis-packed argument list.
+    cuda.abi.assertMatches(api.hgemm, @TypeOf(hgemmMma));
     _ = cuda.Keep(.{&hgemmMma}).__zoxide_keep_kernels;
 }

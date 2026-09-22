@@ -1,4 +1,5 @@
 const cuda = @import("cuda");
+const api = @import("examples_abi");
 
 /// Register-blocked SGEMM with bank-conflict-free B fragment reads.
 /// Same tiling as sgemm_opt: 128x128 block tile, K-slice 16, 256 threads
@@ -141,5 +142,8 @@ pub fn sgemmSwz(a: [*]const f32, b: [*]const f32, c: [*]f32, n: u32) callconv(.k
 }
 
 comptime {
+    // Drift from the signature `zoxide bench` launches through is a compile
+    // error here rather than a silently mis-packed argument list.
+    cuda.abi.assertMatches(api.sgemm, @TypeOf(sgemmSwz));
     _ = cuda.Keep(.{&sgemmSwz}).__zoxide_keep_kernels;
 }

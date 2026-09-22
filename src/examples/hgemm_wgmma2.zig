@@ -1,4 +1,5 @@
 const cuda = @import("cuda");
+const api = @import("examples_abi");
 const gen = cuda.gen;
 const wg = cuda.wgmma;
 
@@ -169,5 +170,8 @@ pub fn hgemmWgmma2(a: [*]const f16, b: [*]const f16, c: [*]f32, n: u32) callconv
 }
 
 comptime {
+    // Drift from the signature `zoxide bench` launches through is a compile
+    // error here rather than a silently mis-packed argument list.
+    cuda.abi.assertMatches(api.hgemm, @TypeOf(hgemmWgmma2));
     _ = cuda.Keep(.{&hgemmWgmma2}).__zoxide_keep_kernels;
 }

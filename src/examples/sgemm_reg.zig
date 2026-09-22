@@ -1,4 +1,5 @@
 const cuda = @import("cuda");
+const api = @import("examples_abi");
 
 /// Register-blocked SGEMM: C = A * B, N x N row-major f32.
 ///
@@ -90,5 +91,8 @@ pub fn sgemmReg(a: [*]const f32, b: [*]const f32, c: [*]f32, n: u32) callconv(.k
 }
 
 comptime {
+    // Drift from the signature `zoxide bench` launches through is a compile
+    // error here rather than a silently mis-packed argument list.
+    cuda.abi.assertMatches(api.sgemm, @TypeOf(sgemmReg));
     _ = cuda.Keep(.{&sgemmReg}).__zoxide_keep_kernels;
 }

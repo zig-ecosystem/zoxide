@@ -1,4 +1,5 @@
 const cuda = @import("cuda");
+const api = @import("examples_abi");
 
 pub const tile = 32;
 
@@ -46,5 +47,8 @@ pub fn sgemmTiled(a: [*]const f32, b: [*]const f32, c: [*]f32, n: u32) callconv(
 }
 
 comptime {
+    // Drift from the signature `zoxide bench` launches through is a compile
+    // error here rather than a silently mis-packed argument list.
+    cuda.abi.assertMatches(api.sgemm, @TypeOf(sgemmTiled));
     _ = cuda.Keep(.{&sgemmTiled}).__zoxide_keep_kernels;
 }

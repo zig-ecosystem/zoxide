@@ -1,4 +1,5 @@
 const cuda = @import("cuda");
+const api = @import("examples_abi");
 
 /// Register-blocked SGEMM, optimization round 2b: double-buffered shared
 /// tiles (prefetch next K-slice into registers while computing the current
@@ -154,5 +155,8 @@ pub fn sgemmOpt2(a: [*]const f32, b: [*]const f32, c: [*]f32, n: u32) callconv(.
 }
 
 comptime {
+    // Drift from the signature `zoxide bench` launches through is a compile
+    // error here rather than a silently mis-packed argument list.
+    cuda.abi.assertMatches(api.sgemm, @TypeOf(sgemmOpt2));
     _ = cuda.Keep(.{&sgemmOpt2}).__zoxide_keep_kernels;
 }

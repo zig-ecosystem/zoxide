@@ -1,4 +1,5 @@
 const cuda = @import("cuda");
+const api = @import("examples_abi");
 const gen = cuda.gen;
 const wg = cuda.wgmma;
 
@@ -116,21 +117,25 @@ pub fn hgemmWgmma(a: [*]const f16, b: [*]const f16, c: [*]f32, n: u32) callconv(
 
     const ktiles = n / k_slice;
     issueTileLoad(0, a, b, n, block_row, block_col, 0, tid);
-    var cur: u1 = 0;
+
     var kt: u32 = 0;
     while (kt < ktiles) : (kt += 1) {
         const has_next = kt + 1 < ktiles; // block-uniform
         if (has_next) {
-            issueTileLoad(1 - cur, a, b, n, block_row, block_col, (kt + 1) * k_slice, tid);
+            issueTileLoad((kt + 1) % 2, a, b, n, block_row, block_col, (kt + 1) * k_slice, tid);
         }
         if (has_next) cpAsyncWaitGroup(1) else cpAsyncWaitGroup(0);
         cuda.syncThreads();
         // scale_d = false on the first stage: overwrite instead of accumulate,
         // which is why `acc` never needs an explicit zeroing pass.
         const scale_d = kt != 0;
-        if (cur == 0) computeStage(0, &acc, scale_d) else computeStage(1, &acc, scale_d);
+        // Buffer parity is derived from kt rather than carried in a mutable
+        // `cur: u1`. The toggle made LLVM keep it in a 1-byte __local_depot and
+        // store to it every iteration — reported by the driver as 8 B/thread
+        // spilled. Deriving it strength-reduces to a rotating counter with no
+        // local memory at all, the same shape hgemm_wgmma2/3 use.
+        if (kt % 2 == 0) computeStage(0, &acc, scale_d) else computeStage(1, &acc, scale_d);
         cuda.syncThreads();
-        cur = 1 - cur;
     }
 
     inline for (0..n_tiles) |t| {
@@ -144,5 +149,8 @@ pub fn hgemmWgmma(a: [*]const f16, b: [*]const f16, c: [*]f32, n: u32) callconv(
 }
 
 comptime {
+    // Drift from the signature `zoxide bench` launches through is a compile
+    // error here rather than a silently mis-packed argument list.
+    cuda.abi.assertMatches(api.hgemm, @TypeOf(hgemmWgmma));
     _ = cuda.Keep(.{&hgemmWgmma}).__zoxide_keep_kernels;
 }

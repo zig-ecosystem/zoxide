@@ -183,9 +183,15 @@ pub fn build(b: *std.Build) void {
     // `zig build kernels`: compile every kernel in src/examples/ to
     // zig-out/kernels/<name>.ptx (sm_90 unless the entry overrides it).
     const kernels_step = b.step("kernels", "Compile all kernels in src/examples/ to PTX (zig-out/kernels/)");
+    // Launch signatures shared with `zoxide bench`, so a kernel whose parameters
+    // change without the launcher following is a compile error.
+    const examples_abi = b.createModule(.{ .root_source_file = b.path("src/examples_abi.zig") });
     for (examples) |ex| {
         const source = b.path(b.fmt("src/examples/{s}.zig", .{ex.name}));
-        kernels_step.dependOn(&addNvptxKernel(b, ex.name, source, b.path("src/cuda.zig"), .{ .sm = ex.sm }).step);
+        const obj = addNvptxKernelObject(b, ex.name, source, b.path("src/cuda.zig"), .{ .sm = ex.sm });
+        obj.root_module.addImport("examples_abi", examples_abi);
+        const out_name = b.fmt("{s}.ptx", .{ex.name});
+        kernels_step.dependOn(&b.addInstallFileWithDir(obj.getEmittedAsm(), .{ .custom = "kernels" }, out_name).step);
     }
 
     // `zig build kernel`: single default kernel (kept for compatibility).
