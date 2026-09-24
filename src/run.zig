@@ -257,6 +257,21 @@ fn runTmaSmoke(
         @memcpy(want[r * p.box_cols * p.elem_bytes ..][0..bytes.len], bytes);
     }
 
+    // The kernel fills with 0xBA when the barrier never completed, which is a
+    // different failure from wrong data and needs saying so: a wrong expect_tx
+    // byte count or a missing fence.proxy.async both land here.
+    for (results, modes) |r, sw| {
+        if (std.mem.allEqual(u8, r, 0xBA)) {
+            try out.print(
+                "FAIL: swizzle {s}: the mbarrier never completed (kernel gave up " ++
+                    "polling). Either the expect_tx byte count does not match what " ++
+                    "the copy delivers ({d} expected), or the copy never started.\n",
+                .{ @tagName(sw), p.tile_bytes },
+            );
+            return 1;
+        }
+    }
+
     var mismatch: usize = 0;
     var first: usize = 0;
     for (results[0], want, 0..) |got, exp, i| {

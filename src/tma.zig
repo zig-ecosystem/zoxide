@@ -97,8 +97,12 @@ pub const Barrier = struct {
 
     /// Spin until the barrier reaches phase `parity`.
     ///
-    /// A loop rather than `mbarrier.test_wait` because `try_wait` is the form
-    /// that lets the SM sleep between polls.
+    /// A loop rather than `mbarrier.test_wait` because `try_wait` is the form that
+    /// lets the SM sleep between polls.
+    ///
+    /// Unbounded, so a barrier that never completes hangs the launch. That is the
+    /// right shape for production code and the wrong shape for a test — use
+    /// `tryWaitFor` where a failure has to be reportable.
     pub inline fn wait(self: Barrier, parity: u32) void {
         asm volatile (
             \\{
@@ -111,6 +115,33 @@ pub const Barrier = struct {
             : [a] "r" (self.addr),
               [p] "r" (parity),
             : .{ .memory = true });
+    }
+
+    /// Poll at most `max_polls` times. Returns false on giving up.
+    ///
+    /// Exists because an unbounded wait on a device turns a wrong byte count or a
+    /// missing fence into a hung process with no diagnostic — which is exactly how
+    /// the first TMA run failed. A bounded wait lets the kernel report instead.
+    pub inline fn tryWaitFor(self: Barrier, parity: u32, max_polls: u32) bool {
+        return asm volatile (
+            \\{
+            \\.reg .pred %pw; .reg .b32 %n;
+            \\mov.b32 %n, %[m];
+            \\mov.b32 %[r], 0;
+            \\$ztw:
+            \\mbarrier.try_wait.parity.acquire.cta.shared::cta.b64 %pw, [%[a]], %[p];
+            \\@%pw mov.b32 %[r], 1;
+            \\@%pw bra $ztwdone;
+            \\sub.s32 %n, %n, 1;
+            \\setp.gt.s32 %pw, %n, 0;
+            \\@%pw bra $ztw;
+            \\$ztwdone:
+            \\}
+            : [r] "=r" (-> u32),
+            : [a] "r" (self.addr),
+              [p] "r" (parity),
+              [m] "r" (max_polls),
+            : .{ .memory = true }) != 0;
     }
 };
 

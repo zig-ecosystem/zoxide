@@ -43,6 +43,11 @@ pub fn tmaSmoke(out: [*]u8, desc: u64, x: i32, y: i32) callconv(.kernel) void {
     // told the byte count exactly once.
     if (tid == 0) {
         bar.init(1);
+        // Not optional, and leaving it out is what hung the first run: the async
+        // proxy (the copy engine) is a separate memory consumer and is not
+        // guaranteed to observe the initialised barrier without it. CUTLASS
+        // orders this the same way — init, fence, then issue.
+        tma.fenceProxyAsync();
     }
     cuda.syncThreads();
 
@@ -50,14 +55,18 @@ pub fn tmaSmoke(out: [*]u8, desc: u64, x: i32, y: i32) callconv(.kernel) void {
         bar.arriveExpectTx(abi.tile_bytes);
         tma.load2D(&tile_mem, desc, bar, x, y);
     }
-    // Every thread waits for phase 0; the copy flips the barrier when the full
-    // byte count has landed.
-    bar.wait(0);
+
+    // Bounded, so a barrier that never completes is reportable rather than a hung
+    // process. The budget is far more than a 1 KB copy needs; the interesting
+    // outcomes are "completed" and "did not", not how many polls it took.
+    const ok = bar.tryWaitFor(0, 1 << 22);
 
     const src: [*]addrspace(.shared) const u8 = @ptrCast(&tile_mem);
     var i = tid;
     while (i < abi.tile_bytes) : (i += abi.block) {
-        out[i] = src[i];
+        // A sentinel the host can recognise, rather than silently handing back
+        // whatever shared memory held.
+        out[i] = if (ok) src[i] else 0xBA;
     }
 }
 

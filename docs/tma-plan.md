@@ -134,6 +134,21 @@ LLVM 没有暴露这个方向的 intrinsic,生成器也就没产出。所以和
 `map.tileBytes()` 交叉校验 —— 这个数写错不会 fault:偏小则 wait 在残缺数据上放行,
 偏大则永不放行。
 
+**第一次跑挂死了。** 已排查并修两处:
+
+1. **漏了 `fence.proxy.async.shared::cta`**。我写了 `fenceProxyAsync()` 却从没调用。
+   `mbarrier.init` 之后必须有它:async proxy(拷贝引擎)是独立的内存消费者,
+   不保证观察到已初始化的 barrier。CUTLASS 的顺序也是 init → fence → issue。
+   **这是最可能的原因,但不是已确认的原因**——逐条排查过哨兵地址空间、描述符
+   对齐、tile 越界、`_` sink、barrier 对齐,都成立。
+2. **无界自旋改成有界**(`tryWaitFor`)。这条比 1 更重要:GPU 上死循环只能杀进程、
+   零诊断。现在放弃轮询后 kernel 写 `0xBA` 哨兵,host 认出来并报
+   「mbarrier never completed」,把「不可诊断的挂死」变成「可报告的失败」。
+   探针另加 shell 层 `timeout 60`,区分「in-kernel 轮询耗尽」和「launch 本身不返回」。
+
+教训:**任何设备侧等待在测试里都必须有界**。这和「正确性检查要和计时放在一起」
+是同一条原则——失败必须能说出自己是什么。
+
 ### S2 — TMA 版 hgemm(需 GPU)
 tile 形状与 `hgemm_wgmma3` **完全一致**(m64n128k16 三级流水),只替换载入路径。
 H1 在这一步用 PTX 判定(无 GPU 即可),H2 用 ptxas 报告判定。

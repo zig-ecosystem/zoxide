@@ -1,22 +1,36 @@
 #!/bin/sh
-# First TMA run. The global->shared direction of cp.async.bulk.tensor has no LLVM
-# intrinsic, so it is hand-written asm here and ptxas has never assembled this
-# construction. Nothing about a wrong descriptor faults, which is why there is a
-# control rather than just a comparison.
+# TMA descriptor-driven copy.
+#
+# The previous run hung. Two changes: the kernel now issues
+# fence.proxy.async.shared::cta after mbarrier.init (the async proxy is a separate
+# memory consumer and is not guaranteed to observe an initialised barrier without
+# it -- CUTLASS orders it the same way), and the wait is bounded so a barrier that
+# never completes is reported instead of hanging.
+#
+# Being straight about it: the fence is the most likely cause, not a confirmed
+# one. The bounded wait is the part that matters either way, because it turns an
+# undiagnosable hang into a message.
 set -eu
 echo "== emitted TMA instructions =="
-grep -nE 'cp\.async\.bulk|mbarrier\.(init|arrive|try_wait)' kernels/tma_smoke.ptx
+grep -nE 'fence\.proxy|cp\.async\.bulk|mbarrier\.(init|arrive|try_wait)' kernels/tma_smoke.ptx
 echo
-echo "== run =="
-# Two descriptors over the same tensor and tile:
-#   .none  -> shared memory holds the row-major tile, linear readout must match
-#   .b128  -> hardware permutes 16-byte chunks, the same readout must differ
-# The second is the control. If both agreed, "matches the source" could not be
-# told apart from "the buffer happened to hold the right bytes".
-./zoxide run kernels/tma_smoke.ptx --arch sm_90a
+echo "== run (60s ceiling; a hang here means the bounded wait did not help) =="
+if timeout 60 ./zoxide run kernels/tma_smoke.ptx --arch sm_90a; then
+    :
+else
+    rc=$?
+    if [ "$rc" = 124 ]; then
+        echo
+        echo "TIMED OUT at the shell. The in-kernel poll budget did not expire, so"
+        echo "the launch itself is not returning -- a different problem from a"
+        echo "barrier that never completes."
+    else
+        echo "(exit $rc)"
+    fi
+fi
 echo
 echo "Reading it:"
-echo "  swizzle .none exact   -> the descriptor is driving the copy"
-echo "  .b128 differs         -> the swizzle field reaches the hardware"
-echo "  .b128 identical       -> FAIL, and it would mean the first line proves little"
-echo "  chunk^row diagnostic  -> my model of the permutation, not a claim under test"
+echo "  'mbarrier never completed'  -> expect_tx byte count wrong, or copy never started"
+echo "  swizzle .none exact         -> the descriptor is driving the copy"
+echo "  .b128 differs from .none    -> the swizzle field reaches the hardware"
+echo "  .b128 identical             -> FAIL; the .none pass would prove little"
