@@ -122,9 +122,13 @@ f16/f16x2/bf16/bf16x2 wrapper 仍有价值——它们覆盖 `ftz`/`nan`/`xorsig
   `GlobalNotFound` 并点出两个长得一样的成因（名字错 / 符号是模块局部的）
 - [x] 构建期工具 `tools/ptx-promote.zig` 编成**宿主原生**——构建图要跑它，
   跟 `-Dtarget` 走会导致交叉编译 bundle 时产出本机跑不了的二进制（已实测撞到）
-- [ ] **待 GPU 验证**（release tag `devglobal-20260924`）：ptxas 是否认后加的 `.visible`
-  并把符号暴露给 `cuModuleGetGlobal`。「非 visible 符号不进 cubin 符号表」这一步是推理不是实测。
-  `run/dev_global` 用两组不同的表跑两轮，使「符号能解析但忽略 host 写入」也会失败
+- [x] **H20 实测通过**（`devglobal-20260924`）：ptxas 接受后加的 `.visible`，
+  `cuModuleGetGlobal` 解析到符号且大小正确（16 B），两轮不同的表
+  （`{1,2,3,4}` 与 `{-100.5, 0.25, 7, 65536}`）各 1024/1024 精确 ——
+  证明 device 每次 launch 重读，而非把值烤进代码
+- [ ] 反向对照待跑（`devglobal-neg-20260924`）：把 `.visible` 去掉是否**真的**解析不到。
+  「promoted 能用」同时也符合「ptxas 本来就暴露 module-scope global」，
+  那样这个 pass 就该删掉
 
 ### v1.0.0 — 稳定化
 

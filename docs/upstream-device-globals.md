@@ -74,9 +74,15 @@ var dev_scale: [4]f32 addrspace(.global) = .{ 1, 2, 3, 4 };
 .global .align 4 .b8 g_$_dev_scale[16] = {0, 0, 128, 63, ...};
 ```
 
-没有 `.visible`。推断 `cuModuleGetGlobal` 因此找不到它(非 visible 的
-module-scope global 不进 cubin 符号表)——**这一步是推理,不是实测**,
-待 GPU 验证。
+没有 `.visible`。
+
+H20 实测(2026-09-24):加上 `.visible` 后 ptxas 接受,`cuModuleGetGlobal` 解析到
+符号且大小正确(16 字节),两轮不同的表(含 `{-100.5, 0.25, 7, 65536}`)结果全精确
+——说明 device 每次 launch 重读,不是把值烤进了代码。
+
+仍未实测:**不加 `.visible` 是否真的解析不到**。「promoted 能用」同时也符合
+「ptxas 本来就暴露 module-scope global」这个解释,那样后处理就是多余的复杂度。
+反向对照见 `scripts/devglobal-probe.sh`(release tag `devglobal-neg-20260924`)。
 
 ## 本仓库的绕法,以及为什么它不该是长期方案
 
