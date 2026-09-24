@@ -24,8 +24,9 @@
 //!     CUDA's layout; the doc comments claiming a broadcast win must be fixed
 //!   - `.const` slower -> ConstBank should be marked as not recommended here
 const cuda = @import("cuda");
+const abi = @import("examples_abi").const_vs_ldg;
 
-const bank_len = 64;
+const bank_len = abi.bank_len;
 const Scales = cuda.ConstBank("cv_scales", f32, bank_len);
 
 comptime {
@@ -42,9 +43,9 @@ var g_scales: [bank_len]f32 addrspace(.global) = .{0} ** bank_len;
 /// loops got different unroll factors (4x vs 8x, because the `.const` asm block
 /// is larger), and comparing different amounts of ILP would measure the unroller
 /// rather than the memory path.
-/// Raised from 4: at 4 the whole kernel ran in 30 us, close enough to launch
-/// overhead to be worth removing as a variable.
-const trips = 64;
+/// Shared with the harness, which computes the expected result from it. Keeping
+/// a private copy here is what produced a 15x wrong answer once already.
+const trips = abi.trips;
 
 pub fn constUniform(out: [*]f32, in: [*]const f32, n: u32) callconv(.kernel) void {
     const i = cuda.globalThreadId();
@@ -115,6 +116,14 @@ pub fn ldgDivergent(out: [*]f32, in: [*]const f32, n: u32) callconv(.kernel) voi
 }
 
 comptime {
+    // All four must stay interchangeable: the harness launches them with one
+    // parameter pack and compares the timings, so a signature that drifts on one
+    // kernel would silently compare different work.
+    cuda.abi.assertMatches(abi.signature, @TypeOf(constUniform));
+    cuda.abi.assertMatches(abi.signature, @TypeOf(ldgUniform));
+    cuda.abi.assertMatches(abi.signature, @TypeOf(constDivergent));
+    cuda.abi.assertMatches(abi.signature, @TypeOf(ldgDivergent));
+
     _ = cuda.Keep(.{
         &constUniform,   &ldgUniform,
         &constDivergent, &ldgDivergent,

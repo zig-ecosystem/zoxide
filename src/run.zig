@@ -3,6 +3,7 @@
 
 const std = @import("std");
 const cu = @import("cuda_driver.zig");
+const abi = @import("examples_abi.zig");
 
 pub const RunArgs = struct {
     input: []const u8,
@@ -168,8 +169,10 @@ fn runConstVsLdg(
     mod: cu.Module,
     out: *std.Io.Writer,
 ) !u8 {
-    const bank_len = 64;
-    const trips = 4;
+    // From the shared declaration, not a local copy: a private `trips` here
+    // drifted from the kernel's and produced a 15x wrong expected value.
+    const bank_len = abi.const_vs_ldg.bank_len;
+    const trips = abi.const_vs_ldg.trips;
     const n: usize = 1 << 20;
     const block: u32 = 256;
     const grid: u32 = @intCast((n + block - 1) / block);

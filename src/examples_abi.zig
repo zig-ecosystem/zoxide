@@ -21,3 +21,22 @@ pub const sgemm = fn (a: [*]const f32, b: [*]const f32, c: [*]f32, n: u32) void;
 /// The f16 tensor-core family: `hgemm_mma`, `hgemm_mma2`, `hgemm_wgmma`,
 /// `hgemm_wgmma2`, `hgemm_wgmma3`. f16 inputs, f32 accumulation.
 pub const hgemm = fn (a: [*]const f16, b: [*]const f16, c: [*]f32, n: u32) void;
+
+/// Shape of the `const_vs_ldg` comparison, shared because the harness computes
+/// the expected result from it.
+///
+/// These were duplicated at first, and the duplicate drifted the moment `trips`
+/// was raised on the device side only. The expected value scales linearly with
+/// `trips`, so the check reported `max rel err 15.000009` — exactly `64/4 - 1`,
+/// which is the kind of number that names its own cause. The measurement would
+/// have run and produced plausible timings either way; only the correctness
+/// check caught it.
+pub const const_vs_ldg = struct {
+    /// Entries in the table. Both the `.const` bank and the global array.
+    pub const bank_len = 64;
+    /// Times each kernel walks the whole table. Sized so a launch takes long
+    /// enough that launch overhead is not part of the measurement.
+    pub const trips = 64;
+
+    pub const signature = fn (out: [*]f32, in: [*]const f32, n: u32) void;
+};
