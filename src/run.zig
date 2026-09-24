@@ -34,6 +34,7 @@ const examples = [_]Example{
     .{ .stem = "const_bank", .entry = "scaleByConst", .default_block = 256 },
     // Two entries; runConstVsLdg resolves both itself.
     .{ .stem = "const_vs_ldg", .entry = "constUniform", .default_block = 256 },
+    .{ .stem = "mbar_smoke", .entry = "barOnly", .default_block = 128 },
     .{ .stem = "tma_smoke", .entry = "tmaSmoke", .default_block = 128 },
 };
 
@@ -146,6 +147,8 @@ pub fn run(
         try runConstBank(gpa, &ctx, mod, func, out)
     else if (std.mem.eql(u8, ex.stem, "const_vs_ldg"))
         try runConstVsLdg(gpa, &ctx, mod, out)
+    else if (std.mem.eql(u8, ex.stem, "mbar_smoke"))
+        try runMbarSmoke(gpa, &ctx, mod, out)
     else if (std.mem.eql(u8, ex.stem, "tma_smoke"))
         try runTmaSmoke(gpa, &ctx, func, out)
     else
@@ -156,6 +159,100 @@ pub fn run(
 fn fail(out: *std.Io.Writer, comptime fmt: []const u8, a: anytype) !u8 {
     try out.print("FAIL: " ++ fmt ++ "\n", a);
     return 1;
+}
+
+/// Bisect the TMA failure: is the mbarrier code wrong, or the copy?
+///
+/// `tma_smoke` hung four times. Three explanations were tried and all three were
+/// wrong, including the last one — that the poll budget accounted for it — since a
+/// 1024-poll kernel still failed to return. Guessing which half of a two-part
+/// mechanism is broken has not worked, so this tests the halves separately.
+///
+/// Three launches, each adding one thing, with a marker printed before each so a
+/// hang names the step:
+///
+///   barOnly        init, arrive, wait. No TMA. A hang here means the barrier
+///                  helpers in src/tma.zig are wrong and TMA is innocent.
+///   barExpectZero  adds arrive.expect_tx with a zero byte count. A hang here
+///                  points at expect_tx encoding rather than at the transfer.
+///   barTwoPhase    two phases, checking the parity convention. This one matters
+///                  for S2 more than for S1: a wrong parity passes a single-phase
+///                  test and deadlocks a pipelined one.
+fn runMbarSmoke(
+    gpa: std.mem.Allocator,
+    ctx: *cu.Context,
+    mod: cu.Module,
+    out: *std.Io.Writer,
+) !u8 {
+    const p = abi.mbar_smoke;
+    const ddiag = try ctx.alloc(p.diag_words * @sizeOf(u32));
+    defer ctx.free(ddiag);
+    _ = gpa;
+
+    const cases = [3][:0]const u8{
+        "mbar_smoke_$_barOnly",
+        "mbar_smoke_$_barExpectZero",
+        "mbar_smoke_$_barTwoPhase",
+    };
+    const what = [3][]const u8{
+        "init + arrive + wait (no TMA)",
+        "+ arrive.expect_tx(0)",
+        "+ second phase (parity 1)",
+    };
+
+    var failures: u8 = 0;
+    for (cases, what) |name, desc| {
+        const func = mod.function(name) catch {
+            try out.print("FAIL: kernel '{s}' not found: {s}\n", .{ name, ctx.drv.lastError() });
+            return 1;
+        };
+        var diag = [_]u32{0} ** p.diag_words;
+        try ctx.copyHtoD(ddiag, std.mem.sliceAsBytes(diag[0..]));
+
+        // stderr, unbuffered: if the launch never returns this is the last thing
+        // seen, and it names the step.
+        std.debug.print("  [{s}] launching: {s}\n", .{ name, desc });
+        var arg_diag = ddiag;
+        var params = [_]?*anyopaque{&arg_diag};
+        try func.launch(1, 1, 1, p.block, 1, 1, &params);
+        try ctx.synchronize();
+        std.debug.print("  [{s}] returned\n", .{name});
+        try ctx.copyDtoH(std.mem.sliceAsBytes(diag[0..]), ddiag);
+
+        if (diag[0] == 0) {
+            try out.print("FAIL: {s}: kernel did not reach its first store\n", .{desc});
+            failures += 1;
+            continue;
+        }
+        if (diag[2] == 0) {
+            try out.print(
+                "FAIL: {s}: wait did not complete in {d} polls " ++
+                    "(state after init 0x{x:0>8}, after wait 0x{x:0>8})\n",
+                .{ desc, diag[3], diag[1], diag[4] },
+            );
+            failures += 1;
+            continue;
+        }
+        // Third case only.
+        if (std.mem.endsWith(u8, name, "barTwoPhase") and diag[6] == 0) {
+            try out.print(
+                "FAIL: {s}: phase 0 completed in {d} polls but phase 1 did not in " ++
+                    "{d}. The parity convention is wrong — waiting on parity 1 for " ++
+                    "the second phase is not what the hardware expects.\n",
+                .{ desc, diag[3], diag[7] },
+            );
+            failures += 1;
+            continue;
+        }
+        try out.print("  PASS {s} (phase 0 in {d} polls)\n", .{ desc, diag[3] });
+    }
+
+    if (failures != 0) {
+        try out.print("FAIL: mbar_smoke {d}/3 cases failed — the barrier layer is at fault, not TMA\n", .{failures});
+        return 1;
+    }
+    try out.print("PASS: mbar_smoke all 3 cases — the barrier layer works, so a TMA hang is the copy\n", .{});
+    return 0;
 }
 
 /// TMA: does a descriptor built by `encodeTensorMap` actually drive

@@ -185,6 +185,7 @@ pub fn build(b: *std.Build) void {
         .{ .name = "dev_global" },
         .{ .name = "const_bank" },
         .{ .name = "const_vs_ldg" },
+        .{ .name = "mbar_smoke", .sm = sm_90a_model },
         .{ .name = "tma_smoke", .sm = sm_90a_model },
     };
 

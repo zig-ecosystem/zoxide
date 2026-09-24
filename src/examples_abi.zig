@@ -41,6 +41,13 @@ pub const const_vs_ldg = struct {
     pub const signature = fn (out: [*]f32, in: [*]const f32, n: u32) void;
 };
 
+/// `mbar_smoke`: mbarrier with TMA removed, to find out which half is broken.
+pub const mbar_smoke = struct {
+    pub const block = 128;
+    pub const diag_words = 8;
+    pub const signature = fn (diag: [*]u32) void;
+};
+
 /// Geometry of the `tma_smoke` tile, shared because three separate things have to
 /// agree on it and only one of them is checkable at compile time:
 ///
