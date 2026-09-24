@@ -206,9 +206,17 @@ fn runConstVsLdg(
 
     try out.print("bench: warp-uniform table read, {d} entries x {d} trips, n={d}\n", .{ bank_len, trips, n });
 
-    var results: [2]f32 = undefined;
-    const names = [2][:0]const u8{ "const_vs_ldg_$_constUniform", "const_vs_ldg_$_ldgUniform" };
-    const labels = [2][]const u8{ ".const  + ld.const     ", ".global + ld.global.nc " };
+    var results: [4]f32 = undefined;
+    const names = [4][:0]const u8{
+        "const_vs_ldg_$_constUniform",   "const_vs_ldg_$_ldgUniform",
+        "const_vs_ldg_$_constDivergent", "const_vs_ldg_$_ldgDivergent",
+    };
+    const labels = [4][]const u8{
+        "uniform    .const  + ld.const    ",
+        "uniform    .global + ld.global.nc",
+        "divergent  .const  + ld.const    ",
+        "divergent  .global + ld.global.nc",
+    };
     for (names, labels, 0..) |kname, label, ki| {
         const func = mod.function(kname) catch {
             try out.print("FAIL: kernel '{s}' not found: {s}\n", .{ kname, ctx.drv.lastError() });
@@ -254,19 +262,48 @@ fn runConstVsLdg(
         try out.print("  {s} {d: >8.3} ms   (max rel err {e})\n", .{ label, best, max_rel });
     }
 
-    const ratio = results[1] / results[0];
-    try out.print("  .const is {d:.2}x the throughput of ld.global.nc here\n", .{ratio});
-    // Deliberately not a pass/fail threshold: the point is the number, and a
-    // null result is a real finding that should not be reported as a failure.
-    if (ratio > 1.05) {
-        try out.print("PASS: const_vs_ldg — .const measurably faster ({d:.2}x)\n", .{ratio});
-    } else if (ratio < 0.95) {
-        try out.print("PASS: const_vs_ldg — .const measurably SLOWER ({d:.2}x); " ++
-            "ConstBank should not be recommended for this pattern\n", .{ratio});
+    const uniform_ratio = results[1] / results[0];
+    const divergent_ratio = results[3] / results[2];
+    try out.print(
+        "\n  uniform:   .const is {d:.2}x ld.global.nc\n" ++
+            "  divergent: .const is {d:.2}x ld.global.nc\n",
+        .{ uniform_ratio, divergent_ratio },
+    );
+
+    // Statement counts from the emitted PTX, which is where the competing
+    // explanation lives. `.const` folds the offset into the instruction when the
+    // index is known at compile time and needs mov/cvt/add when it is not, so it
+    // is ahead on instruction count in the uniform test and behind in the
+    // divergent one:
+    //
+    //   uniform    const 241  vs ldg 285   -> const 15% fewer
+    //   divergent  const 603  vs ldg 476   -> const 27% more
+    //
+    // That gives the instruction-count hypothesis a quantitative prediction, so
+    // the two explanations can be told apart instead of argued about:
+    const instr_only_prediction = 0.79; // 476/603, i.e. what statement counts alone imply
+    try out.print(
+        "  instruction counts alone predict divergent {d:.2}x " ++
+            "(const 603 statements vs ldg 476)\n",
+        .{instr_only_prediction},
+    );
+
+    if (uniform_ratio <= 1.02) {
+        try out.print("PASS: const_vs_ldg — no uniform advantage ({d:.2}x); remove the " ++
+            "broadcast claim from the ConstBank docs\n", .{uniform_ratio});
+    } else if (divergent_ratio < instr_only_prediction * 0.75) {
+        // Divergent is far worse than instruction counts can account for, which
+        // is the signature of per-address serialisation in the constant window —
+        // and serialisation only exists because the cache broadcasts.
+        try out.print("PASS: const_vs_ldg — broadcast confirmed: uniform {d:.2}x, " ++
+            "divergent {d:.2}x, well below the {d:.2}x that instruction counts " ++
+            "explain. The constant window serialises per distinct address, so the " ++
+            "uniform win is the cache and not just shorter code.\n", .{ uniform_ratio, divergent_ratio, instr_only_prediction });
     } else {
-        try out.print("PASS: const_vs_ldg — no measurable difference ({d:.2}x); " ++
-            "the read-only cache already handles this, so the broadcast claim " ++
-            "must be removed from the docs\n", .{ratio});
+        try out.print("PASS: const_vs_ldg — uniform {d:.2}x, but divergent {d:.2}x is " ++
+            "close to the {d:.2}x that instruction counts alone predict. The " ++
+            "advantage is shorter code, not broadcast; the ConstBank docs should " ++
+            "say so.\n", .{ uniform_ratio, divergent_ratio, instr_only_prediction });
     }
     return 0;
 }
