@@ -24,6 +24,10 @@ pub const asm_gen = @import("gen/instrinsics_asm.zig");
 /// Hopper warpgroup MMA (`wgmma.mma_async`). Requires sm_90a; hand-written
 /// asm because LLVM has no mma_async intrinsic.
 pub const wgmma = @import("wgmma.zig");
+
+/// TMA: descriptor-driven bulk tensor copies. See src/tma.zig for why the g2s
+/// direction is hand-written asm.
+pub const tma = @import("tma.zig");
 /// Compile-time kernel signature agreement with the host side. Use
 /// `abi.assertMatches(shared_decl, @TypeOf(my_kernel))` so that changing a
 /// kernel's parameters without updating the host is a compile error here.

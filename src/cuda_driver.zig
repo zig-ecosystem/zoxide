@@ -14,6 +14,17 @@ pub const CUfunction = ?*anyopaque;
 pub const CUstream = ?*anyopaque; // null = default stream
 pub const CUevent = ?*anyopaque;
 
+/// `CUtensorMap` — the TMA descriptor. Opaque 128 bytes that the driver fills in
+/// and the kernel receives by pointer; the layout is deliberately not public, so
+/// it is only ever passed around, never inspected.
+///
+/// 64-byte alignment is a hardware requirement, not a suggestion: `cp.async.bulk.
+/// tensor` reads the descriptor through a dedicated path and a misaligned one
+/// faults at launch rather than at encode time.
+pub const CUtensorMap = extern struct {
+    opaque_bytes: [128]u8 align(64) = @splat(0),
+};
+
 /// CUresult is a c_int. Common codes (authoritative names come from
 /// cuGetErrorName at runtime):
 ///   0 SUCCESS, 1 INVALID_VALUE, 2 OUT_OF_MEMORY, 3 NOT_INITIALIZED,
@@ -109,6 +120,25 @@ pub const Driver = struct {
     // "host writes once, device reads by name" pattern (CUDA's
     // `cudaMemcpyToSymbol`). Requires the symbol to be `.visible` in the PTX.
     cuModuleGetGlobal_v2: *const fn (dptr: *CUdeviceptr, bytes: *usize, hmod: CUmodule, name: [*:0]const u8) callconv(.c) c_int,
+    // Builds the TMA descriptor. Host-side only: the hardware needs the tensor
+    // shape resolved before launch, which is the whole point — address generation
+    // moves out of the kernel and into the copy engine.
+    // Optional: CUDA 12+ only. See the note in `load` — a missing TMA symbol
+    // must not stop an older driver from loading everything else.
+    cuTensorMapEncodeTiled: ?*const fn (
+        tensorMap: *CUtensorMap,
+        dtype: c_uint,
+        rank: c_uint,
+        global_address: ?*anyopaque,
+        global_dim: [*]const u64,
+        global_strides: [*]const u64,
+        box_dim: [*]const u32,
+        element_strides: [*]const u32,
+        interleave: c_uint,
+        swizzle: c_uint,
+        l2_promotion: c_uint,
+        oob_fill: c_uint,
+    ) callconv(.c) c_int,
     cuMemAlloc_v2: *const fn (dptr: *CUdeviceptr, bytesize: usize) callconv(.c) c_int,
     cuMemFree_v2: *const fn (dptr: CUdeviceptr) callconv(.c) c_int,
     cuMemcpyHtoD_v2: *const fn (dstDevice: CUdeviceptr, srcHost: ?*const anyopaque, byteCount: usize) callconv(.c) c_int,
@@ -173,8 +203,17 @@ pub const Driver = struct {
         drv.err_len = 0;
         inline for (@typeInfo(Driver).@"struct".fields) |f| {
             if (comptime std.mem.startsWith(u8, f.name, "cu")) {
-                @field(drv, f.name) = lib.lookup(f.type, f.name) orelse
-                    return error.SymbolMissing;
+                // An optional field marks a symbol that may legitimately be
+                // absent on an older driver. Treating those as fatal would mean
+                // a CUDA 11 driver cannot load the library at all, just because
+                // it lacks the TMA entry points — so absence is recorded and
+                // reported at the point of use instead.
+                if (comptime @typeInfo(f.type) == .optional) {
+                    @field(drv, f.name) = lib.lookup(@typeInfo(f.type).optional.child, f.name);
+                } else {
+                    @field(drv, f.name) = lib.lookup(f.type, f.name) orelse
+                        return error.SymbolMissing;
+                }
             }
         }
         return drv;
@@ -328,6 +367,132 @@ pub const Context = struct {
         try self.drv.check(self.drv.cuCtxSynchronize());
     }
 
+    /// Build a TMA descriptor for a `rank`-dimensional tensor in device memory,
+    /// tiled by `box`.
+    ///
+    /// Both arrays are innermost-first, which is the driver's order and the
+    /// reverse of how a row-major matrix is usually described: for an `rows x
+    /// cols` row-major matrix, `dim = .{ cols, rows }`.
+    ///
+    /// The element type comes from `T` rather than a separate argument, because
+    /// the two disagreeing is the failure that costs the most to find — it
+    /// encodes, it launches, and it produces garbage.
+    ///
+    /// Checked here rather than left to `CUDA_ERROR_INVALID_VALUE`:
+    ///
+    ///   - rank 1..5
+    ///   - every box dimension in 1..256
+    ///   - innermost box width against the swizzle period. This one is not an
+    ///     error in the driver at all: a 128B swizzle with a 64-byte inner tile
+    ///     copies successfully and delivers permuted data.
+    ///   - global address 16-byte aligned
+    ///   - strides multiples of 16
+    ///
+    /// `strides` is `rank - 1` entries in bytes, innermost stride first, matching
+    /// the driver: the innermost dimension is implicitly unit-stride.
+    pub fn encodeTensorMap(
+        self: *Context,
+        comptime T: type,
+        ptr: CUdeviceptr,
+        dim: []const u64,
+        strides: []const u64,
+        box: []const u32,
+        opts: struct {
+            swizzle: Swizzle = .none,
+            l2_promotion: L2Promotion = .b128,
+            oob_fill: OobFill = .zero,
+            /// Elements skipped between loads along each dimension. All ones for
+            /// a dense tile, which is nearly always what is wanted.
+            element_strides: ?[]const u32 = null,
+        },
+    ) Error!TensorMap {
+        const elem = @sizeOf(T);
+
+        if (dim.len < 1 or dim.len > 5) {
+            return self.fail("tensor rank {d} out of range; TMA supports 1..5", .{dim.len});
+        }
+        if (box.len != dim.len) {
+            return self.fail("box has {d} dimensions but the tensor has {d}", .{ box.len, dim.len });
+        }
+        if (strides.len != dim.len - 1) {
+            return self.fail(
+                "strides needs {d} entries for a rank-{d} tensor (the innermost " ++
+                    "dimension is implicitly unit-stride), got {d}",
+                .{ dim.len - 1, dim.len, strides.len },
+            );
+        }
+        for (box, 0..) |b, i| {
+            if (b == 0 or b > 256) {
+                return self.fail("box dimension {d} is {d}; TMA requires 1..256", .{ i, b });
+            }
+        }
+        // The check the driver does not do.
+        if (opts.swizzle != .none) {
+            const inner_bytes = @as(usize, box[0]) * elem;
+            const period = opts.swizzle.periodBytes();
+            if (inner_bytes > period) {
+                return self.fail(
+                    "innermost box is {d} bytes ({d} x {d}B) but {s} swizzle has a " ++
+                        "{d}-byte period; the copy would succeed and deliver permuted data",
+                    .{ inner_bytes, box[0], elem, @tagName(opts.swizzle), period },
+                );
+            }
+        }
+        if (ptr % 16 != 0) {
+            return self.fail("tensor address {x} is not 16-byte aligned", .{ptr});
+        }
+        for (strides, 0..) |s, i| {
+            if (s % 16 != 0) {
+                return self.fail("stride {d} is {d} bytes; TMA requires multiples of 16", .{ i, s });
+            }
+        }
+
+        var ones: [5]u32 = @splat(1);
+        const estrides = opts.element_strides orelse ones[0..dim.len];
+
+        var out: TensorMap = .{
+            .map = .{},
+            .box = @splat(1),
+            .rank = @intCast(dim.len),
+            .swizzle = opts.swizzle,
+            .elem_bytes = elem,
+        };
+        @memcpy(out.box[0..box.len], box);
+
+        const encode = self.drv.cuTensorMapEncodeTiled orelse {
+            _ = self.fail(
+                "this driver has no cuTensorMapEncodeTiled; TMA needs CUDA 12 or newer",
+                .{},
+            );
+            // Not InvalidValue: nothing is wrong with the arguments.
+            return error.SymbolMissing;
+        };
+        try self.drv.check(self.drv.cuCtxSetCurrent(self.ctx));
+        try self.drv.check(encode(
+            &out.map,
+            tensorDataType(T),
+            @intCast(dim.len),
+            @ptrFromInt(ptr),
+            dim.ptr,
+            strides.ptr,
+            box.ptr,
+            estrides.ptr,
+            0, // interleave: none
+            @intFromEnum(opts.swizzle),
+            @intFromEnum(opts.l2_promotion),
+            @intFromEnum(opts.oob_fill),
+        ));
+        return out;
+    }
+
+    /// Record a rejected-before-the-driver message and return `InvalidValue`, so
+    /// the reason survives instead of becoming a bare error code.
+    fn fail(self: *Context, comptime fmt: []const u8, args: anytype) Error {
+        const m = std.fmt.bufPrint(&self.drv.err_buf, fmt, args) catch "invalid tensor map parameters";
+        self.drv.err_len = m.len;
+        return error.InvalidValue;
+    }
+
     /// `non_blocking` streams do not synchronise with the legacy default
     /// stream, which is what you want when several streams should genuinely run
     /// concurrently.
@@ -435,6 +600,81 @@ pub const Event = struct {
         self.drv.check(self.drv.cuEventDestroy(self.ev)) catch {};
     }
 };
+
+/// How the shared-memory destination of a TMA copy is swizzled.
+///
+/// Not cosmetic: the mode fixes how many bytes of the innermost dimension one
+/// swizzle period covers, so it has to agree with the tile width. A mismatch is
+/// not a fault — the copy succeeds and delivers permuted data — which is why
+/// `TensorMap.encode` checks the relationship instead of passing the value
+/// through.
+pub const Swizzle = enum(c_uint) {
+    none = 0,
+    b32 = 1,
+    b64 = 2,
+    b128 = 3,
+
+    /// Bytes of the innermost dimension covered by one swizzle period. The
+    /// innermost box dimension must not exceed this.
+    pub fn periodBytes(self: Swizzle) usize {
+        return switch (self) {
+            .none => 0, // no constraint
+            .b32 => 32,
+            .b64 => 64,
+            .b128 => 128,
+        };
+    }
+};
+
+/// L2 prefetch hint applied to the copy.
+pub const L2Promotion = enum(c_uint) { none = 0, b64 = 1, b128 = 2, b256 = 3 };
+
+/// What a copy writes for coordinates outside the tensor. `zero` is what a GEMM
+/// wants at the ragged edge; `nan` makes out-of-range reads visible instead of
+/// quietly plausible.
+pub const OobFill = enum(c_uint) { zero = 0, nan = 1 };
+
+/// A TMA descriptor plus the shape it was built for.
+///
+/// Keeping the shape alongside the opaque bytes is what makes the kernel-side
+/// contract checkable: the descriptor tells the hardware the tile geometry, and
+/// nothing in `cp.async.bulk.tensor` verifies that the kernel's shared-memory
+/// buffer matches it.
+pub const TensorMap = struct {
+    map: CUtensorMap,
+    /// Innermost first, matching the driver's ordering.
+    box: [5]u32,
+    rank: u32,
+    swizzle: Swizzle,
+    elem_bytes: u32,
+
+    /// Bytes one tile occupies in shared memory. What the kernel must reserve.
+    pub fn tileBytes(self: TensorMap) usize {
+        var n: usize = self.elem_bytes;
+        for (self.box[0..self.rank]) |d| n *= d;
+        return n;
+    }
+};
+
+/// Map a Zig element type to `CUtensorMapDataType`.
+///
+/// Deriving this from the type rather than taking it as an argument removes the
+/// mismatch that costs the most to debug: declaring an f16 tensor while handing
+/// over an f32 pointer encodes cleanly, launches cleanly, and produces garbage.
+fn tensorDataType(comptime T: type) c_uint {
+    return switch (T) {
+        u8, i8 => 0,
+        u16 => 1,
+        u32 => 2,
+        i32 => 3,
+        u64 => 4,
+        i64 => 5,
+        f16 => 6,
+        f32 => 7,
+        f64 => 9,
+        else => @compileError("no CUtensorMapDataType for " ++ @typeName(T)),
+    };
+}
 
 pub const Module = struct {
     drv: *Driver,
