@@ -35,9 +35,24 @@ var tile_mem: [abi.tile_bytes]u8 align(128) addrspace(.shared) = undefined;
 /// mbarrier state is a single 64-bit word.
 var bar_mem: [1]u64 addrspace(.shared) = undefined;
 
-pub fn tmaSmoke(out: [*]u8, desc: u64, x: i32, y: i32) callconv(.kernel) void {
+/// Stage markers the kernel writes so a failure says where it stopped.
+///
+/// Two runs hung with no output at all, which taught the same thing twice: a
+/// device-side failure that cannot report its position costs a whole round trip.
+/// The host reads these first and names the stage before looking at any data.
+pub const Stage = struct {
+    pub const entered = 0;
+    pub const initialised = 1;
+    pub const issued = 2;
+    pub const wait_result = 3;
+    pub const count = 4;
+};
+
+pub fn tmaSmoke(out: [*]u8, diag: [*]u32, desc: u64, x: i32, y: i32) callconv(.kernel) void {
     const tid = cuda.threadIdx().x;
     const bar = tma.Barrier.at(&bar_mem);
+
+    if (tid == 0) diag[Stage.entered] = 1;
 
     // One thread issues: a bulk tensor copy is per-CTA, and the barrier must be
     // told the byte count exactly once.
@@ -48,18 +63,23 @@ pub fn tmaSmoke(out: [*]u8, desc: u64, x: i32, y: i32) callconv(.kernel) void {
         // guaranteed to observe the initialised barrier without it. CUTLASS
         // orders this the same way — init, fence, then issue.
         tma.fenceProxyAsync();
+        diag[Stage.initialised] = 1;
     }
     cuda.syncThreads();
 
     if (tid == 0) {
         bar.arriveExpectTx(abi.tile_bytes);
         tma.load2D(&tile_mem, desc, bar, x, y);
+        // Written after the issue returns. The copy is asynchronous, so this says
+        // the instruction was accepted, not that data has landed.
+        diag[Stage.issued] = 1;
     }
 
     // Bounded, so a barrier that never completes is reportable rather than a hung
     // process. The budget is far more than a 1 KB copy needs; the interesting
     // outcomes are "completed" and "did not", not how many polls it took.
-    const ok = bar.tryWaitFor(0, 1 << 22);
+    const ok = bar.tryWaitFor(0, 1 << 20);
+    if (tid == 0) diag[Stage.wait_result] = if (ok) 1 else 0;
 
     const src: [*]addrspace(.shared) const u8 = @ptrCast(&tile_mem);
     var i = tid;

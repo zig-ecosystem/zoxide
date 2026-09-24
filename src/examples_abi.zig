@@ -64,5 +64,7 @@ pub const tma_smoke = struct {
     pub const tile_bytes = box_cols * box_rows * elem_bytes;
     pub const block = 128;
 
-    pub const signature = fn (out: [*]u8, desc: u64, x: i32, y: i32) void;
+    pub const signature = fn (out: [*]u8, diag: [*]u32, desc: u64, x: i32, y: i32) void;
+    /// Stage markers, so a device-side failure reports where it stopped.
+    pub const diag_words = 4;
 };

@@ -1,36 +1,34 @@
 #!/bin/sh
-# TMA descriptor-driven copy.
+# TMA descriptor-driven copy, third attempt.
 #
-# The previous run hung. Two changes: the kernel now issues
-# fence.proxy.async.shared::cta after mbarrier.init (the async proxy is a separate
-# memory consumer and is not guaranteed to observe an initialised barrier without
-# it -- CUTLASS orders it the same way), and the wait is bounded so a barrier that
-# never completes is reported instead of hanging.
+# The first two runs hung and returned no output at all. That absence was a tool
+# problem, not a clue: the report writer is buffered and flushed at exit, so
+# killing the process discarded every line. Fixed three ways:
 #
-# Being straight about it: the fence is the most likely cause, not a confirmed
-# one. The bounded wait is the part that matters either way, because it turns an
-# undiagnosable hang into a message.
+#   - progress markers go to stderr, which is unbuffered, so they survive a kill
+#   - the kernel writes stage markers to device memory, so a device-side stall
+#     reports which instruction it got past
+#   - the retry loop moved out of inline asm into Zig. The asm version wrote its
+#     output register before re-reading the barrier address on later iterations,
+#     and nothing stops the compiler from giving an output and an input the same
+#     register -- it needed "=&r". Not hand-rolling the loop removes the class.
 set -eu
 echo "== emitted TMA instructions =="
 grep -nE 'fence\.proxy|cp\.async\.bulk|mbarrier\.(init|arrive|try_wait)' kernels/tma_smoke.ptx
 echo
-echo "== run (60s ceiling; a hang here means the bounded wait did not help) =="
-if timeout 60 ./zoxide run kernels/tma_smoke.ptx --arch sm_90a; then
+echo "== run (60s ceiling) =="
+if timeout 60 ./zoxide run kernels/tma_smoke.ptx --arch sm_90a 2>&1; then
     :
 else
     rc=$?
-    if [ "$rc" = 124 ]; then
-        echo
-        echo "TIMED OUT at the shell. The in-kernel poll budget did not expire, so"
-        echo "the launch itself is not returning -- a different problem from a"
-        echo "barrier that never completes."
-    else
-        echo "(exit $rc)"
-    fi
+    [ "$rc" = 124 ] && echo "
+TIMED OUT. The last stderr marker above is where it stopped."
+    [ "$rc" != 124 ] && echo "(exit $rc)"
 fi
 echo
-echo "Reading it:"
-echo "  'mbarrier never completed'  -> expect_tx byte count wrong, or copy never started"
-echo "  swizzle .none exact         -> the descriptor is driving the copy"
-echo "  .b128 differs from .none    -> the swizzle field reaches the hardware"
-echo "  .b128 identical             -> FAIL; the .none pass would prove little"
+echo "Markers localise a stall, in order:"
+echo "  encoding descriptor / launching / launched / synchronised"
+echo "  then per-stage: entered, initialised, issued, barrier completed"
+echo
+echo "Then the actual claim:"
+echo "  .none exact + .b128 differs  -> the descriptor drives the copy and swizzle reaches HW"

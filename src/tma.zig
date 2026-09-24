@@ -117,31 +117,39 @@ pub const Barrier = struct {
             : .{ .memory = true });
     }
 
-    /// Poll at most `max_polls` times. Returns false on giving up.
+    /// One `try_wait` poll. True if the barrier has reached `parity`.
     ///
-    /// Exists because an unbounded wait on a device turns a wrong byte count or a
-    /// missing fence into a hung process with no diagnostic — which is exactly how
-    /// the first TMA run failed. A bounded wait lets the kernel report instead.
-    pub inline fn tryWaitFor(self: Barrier, parity: u32, max_polls: u32) bool {
+    /// A single self-contained instruction, which matters: the previous version
+    /// put the retry loop inside the asm block and wrote its output register
+    /// before reading `%[a]` and `%[p]` on later iterations. Nothing stops the
+    /// compiler from assigning the output the same physical register as an input —
+    /// inline asm is assumed to read all inputs before writing any output — so the
+    /// barrier address or the parity could be clobbered mid-loop. It would have
+    /// needed `"=&r"`; not having the loop in asm at all is better.
+    pub inline fn tryWaitOnce(self: Barrier, parity: u32) bool {
         return asm volatile (
             \\{
-            \\.reg .pred %pw; .reg .b32 %n;
-            \\mov.b32 %n, %[m];
-            \\mov.b32 %[r], 0;
-            \\$ztw:
+            \\.reg .pred %pw;
             \\mbarrier.try_wait.parity.acquire.cta.shared::cta.b64 %pw, [%[a]], %[p];
-            \\@%pw mov.b32 %[r], 1;
-            \\@%pw bra $ztwdone;
-            \\sub.s32 %n, %n, 1;
-            \\setp.gt.s32 %pw, %n, 0;
-            \\@%pw bra $ztw;
-            \\$ztwdone:
+            \\selp.b32 %[r], 1, 0, %pw;
             \\}
             : [r] "=r" (-> u32),
             : [a] "r" (self.addr),
               [p] "r" (parity),
-              [m] "r" (max_polls),
             : .{ .memory = true }) != 0;
+    }
+
+    /// Poll at most `max_polls` times. Returns false on giving up.
+    ///
+    /// The loop is Zig's, not PTX's, so there are no labels to collide and no
+    /// register aliasing to reason about. An unbounded wait on a device turns a
+    /// wrong byte count or a missing fence into a hung process with no diagnostic.
+    pub inline fn tryWaitFor(self: Barrier, parity: u32, max_polls: u32) bool {
+        var n = max_polls;
+        while (n > 0) : (n -= 1) {
+            if (self.tryWaitOnce(parity)) return true;
+        }
+        return false;
     }
 };
 

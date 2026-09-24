@@ -196,6 +196,8 @@ fn runTmaSmoke(
 
     const dout = try ctx.alloc(p.tile_bytes);
     defer ctx.free(dout);
+    const ddiag = try ctx.alloc(p.diag_words * @sizeOf(u32));
+    defer ctx.free(ddiag);
     const ddesc = try ctx.alloc(128);
     defer ctx.free(ddesc);
 
@@ -220,6 +222,7 @@ fn runTmaSmoke(
 
     const modes = [2]cu.Swizzle{ .none, .b128 };
     for (modes, 0..) |sw, mi| {
+        std.debug.print("  [{s}] encoding descriptor\n", .{@tagName(sw)});
         const map = ctx.encodeTensorMap(f16, dsrc, dim[0..], strides[0..], box[0..], .{
             .swizzle = sw,
         }) catch {
@@ -238,14 +241,48 @@ fn runTmaSmoke(
         @memset(host_out, 0);
         try ctx.copyHtoD(dout, host_out);
 
+        var diag = [_]u32{0} ** p.diag_words;
+        try ctx.copyHtoD(ddiag, std.mem.sliceAsBytes(diag[0..]));
+
         var arg_out = dout;
+        var arg_diag = ddiag;
         var arg_desc = ddesc;
         var arg_x = tile_x;
         var arg_y = tile_y;
-        var params = [_]?*anyopaque{ &arg_out, &arg_desc, &arg_x, &arg_y };
+        var params = [_]?*anyopaque{ &arg_out, &arg_diag, &arg_desc, &arg_x, &arg_y };
+
+        // Progress markers on stderr, which is unbuffered. `out` is a buffered
+        // writer flushed at exit, so when this hung for 60s and was killed, every
+        // line written to it was lost and the run looked like it never started.
+        // A hang has to be localisable without the process exiting cleanly.
+        std.debug.print("  [{s}] launching\n", .{@tagName(sw)});
         try func.launch(1, 1, 1, p.block, 1, 1, &params);
+        std.debug.print("  [{s}] launched, synchronising\n", .{@tagName(sw)});
         try ctx.synchronize();
+        std.debug.print("  [{s}] synchronised, reading back\n", .{@tagName(sw)});
+        try ctx.copyDtoH(std.mem.sliceAsBytes(diag[0..]), ddiag);
         try ctx.copyDtoH(results[mi], dout);
+
+        // Stage markers before data: a failure should name where it stopped
+        // rather than leave the reader comparing bytes that were never written.
+        if (diag[0] == 0) {
+            return fail(out, "{s}: the kernel did not reach its first instruction", .{@tagName(sw)});
+        }
+        if (diag[1] == 0) {
+            return fail(out, "{s}: stopped between entry and mbarrier.init + fence", .{@tagName(sw)});
+        }
+        if (diag[2] == 0) {
+            return fail(out, "{s}: mbarrier.init succeeded but cp.async.bulk.tensor never returned", .{@tagName(sw)});
+        }
+        if (diag[3] == 0) {
+            return fail(out,
+                "{s}: the copy was issued but the mbarrier never completed within " ++
+                    "the poll budget. Either expect_tx ({d} bytes) does not match " ++
+                    "what the copy delivers, or the descriptor is not driving a " ++
+                    "transfer at all",
+                .{ @tagName(sw), p.tile_bytes });
+        }
+        try out.print("  [{s}] stages: entered, initialised, issued, barrier completed\n", .{@tagName(sw)});
     }
 
     // Expected unswizzled tile, read straight out of the source.
@@ -255,21 +292,6 @@ fn runTmaSmoke(
         const row_off = (@as(usize, @intCast(tile_y)) + r) * p.cols + @as(usize, @intCast(tile_x));
         const bytes = std.mem.sliceAsBytes(src[row_off..][0..p.box_cols]);
         @memcpy(want[r * p.box_cols * p.elem_bytes ..][0..bytes.len], bytes);
-    }
-
-    // The kernel fills with 0xBA when the barrier never completed, which is a
-    // different failure from wrong data and needs saying so: a wrong expect_tx
-    // byte count or a missing fence.proxy.async both land here.
-    for (results, modes) |r, sw| {
-        if (std.mem.allEqual(u8, r, 0xBA)) {
-            try out.print(
-                "FAIL: swizzle {s}: the mbarrier never completed (kernel gave up " ++
-                    "polling). Either the expect_tx byte count does not match what " ++
-                    "the copy delivers ({d} expected), or the copy never started.\n",
-                .{ @tagName(sw), p.tile_bytes },
-            );
-            return 1;
-        }
     }
 
     var mismatch: usize = 0;
