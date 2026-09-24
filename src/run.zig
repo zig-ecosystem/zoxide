@@ -274,15 +274,43 @@ fn runTmaSmoke(
         if (diag[2] == 0) {
             return fail(out, "{s}: mbarrier.init succeeded but cp.async.bulk.tensor never returned", .{@tagName(sw)});
         }
+        const st = struct {
+            fn word(d: []const u32, lo: usize) u64 {
+                return @as(u64, d[lo]) | (@as(u64, d[lo + 1]) << 32);
+            }
+        };
+        const after_init = st.word(diag[0..], 4);
+        const after_issue = st.word(diag[0..], 6);
+        const after_polls = st.word(diag[0..], 8);
+
         if (diag[3] == 0) {
-            return fail(out,
-                "{s}: the copy was issued but the mbarrier never completed within " ++
-                    "the poll budget. Either expect_tx ({d} bytes) does not match " ++
-                    "what the copy delivers, or the descriptor is not driving a " ++
-                    "transfer at all",
-                .{ @tagName(sw), p.tile_bytes });
+            try out.print(
+                "FAIL: [{s}] the copy was issued but the mbarrier never completed in " ++
+                    "{d} polls.\n" ++
+                    "  mbarrier state after init:  0x{x:0>16}\n" ++
+                    "  mbarrier state after issue: 0x{x:0>16}\n" ++
+                    "  mbarrier state after polls: 0x{x:0>16}\n",
+                .{ @tagName(sw), diag[10], after_init, after_issue, after_polls },
+            );
+            // The state word distinguishes the two causes that otherwise look the
+            // same from outside.
+            if (after_polls == after_issue and after_issue == after_init) {
+                try out.print(
+                    "  The state never moved, so the copy engine never touched the " ++
+                        "barrier: the descriptor is not driving a transfer at all, " ++
+                        "rather than transferring the wrong number of bytes.\n",
+                    .{},
+                );
+            } else {
+                try out.print(
+                    "  The state moved but stopped short, so a transfer did start: " ++
+                        "expect_tx ({d} bytes) and what the copy delivers disagree.\n",
+                    .{p.tile_bytes},
+                );
+            }
+            return 1;
         }
-        try out.print("  [{s}] stages: entered, initialised, issued, barrier completed\n", .{@tagName(sw)});
+        try out.print("  [{s}] stages: entered, initialised, issued, barrier completed in {d} polls\n", .{ @tagName(sw), diag[10] });
     }
 
     // Expected unswizzled tile, read straight out of the source.

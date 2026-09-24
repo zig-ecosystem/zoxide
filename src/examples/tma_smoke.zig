@@ -45,8 +45,33 @@ pub const Stage = struct {
     pub const initialised = 1;
     pub const issued = 2;
     pub const wait_result = 3;
-    pub const count = 4;
+    /// Raw mbarrier state word, sampled at three points. An mbarrier is ordinary
+    /// shared memory, so it can simply be read.
+    ///
+    /// This is what separates the two explanations for a barrier that never
+    /// completes. If the word is unchanged between `issue` and `polled`, the copy
+    /// engine never touched it and the descriptor is not driving a transfer. If it
+    /// moved but stopped short, the expected byte count and the delivered bytes
+    /// disagree.
+    pub const mbar_after_init_lo = 4;
+    pub const mbar_after_init_hi = 5;
+    pub const mbar_after_issue_lo = 6;
+    pub const mbar_after_issue_hi = 7;
+    pub const mbar_after_polls_lo = 8;
+    pub const mbar_after_polls_hi = 9;
+    pub const polls_used = 10;
 };
+
+/// Read the barrier's state word. Volatile, so the poll loop cannot hoist it.
+inline fn barState() u64 {
+    const p: *addrspace(.shared) volatile const u64 = @ptrCast(&bar_mem[0]);
+    return p.*;
+}
+
+inline fn writeState(diag: [*]u32, comptime lo: usize, v: u64) void {
+    diag[lo] = @truncate(v);
+    diag[lo + 1] = @truncate(v >> 32);
+}
 
 pub fn tmaSmoke(out: [*]u8, diag: [*]u32, desc: u64, x: i32, y: i32) callconv(.kernel) void {
     const tid = cuda.threadIdx().x;
@@ -64,6 +89,7 @@ pub fn tmaSmoke(out: [*]u8, diag: [*]u32, desc: u64, x: i32, y: i32) callconv(.k
         // orders this the same way — init, fence, then issue.
         tma.fenceProxyAsync();
         diag[Stage.initialised] = 1;
+        writeState(diag, Stage.mbar_after_init_lo, barState());
     }
     cuda.syncThreads();
 
@@ -73,13 +99,27 @@ pub fn tmaSmoke(out: [*]u8, diag: [*]u32, desc: u64, x: i32, y: i32) callconv(.k
         // Written after the issue returns. The copy is asynchronous, so this says
         // the instruction was accepted, not that data has landed.
         diag[Stage.issued] = 1;
+        writeState(diag, Stage.mbar_after_issue_lo, barState());
     }
 
-    // Bounded, so a barrier that never completes is reportable rather than a hung
-    // process. The budget is far more than a 1 KB copy needs; the interesting
-    // outcomes are "completed" and "did not", not how many polls it took.
-    const ok = bar.tryWaitFor(0, 1 << 20);
-    if (tid == 0) diag[Stage.wait_result] = if (ok) 1 else 0;
+    // Small on purpose. A failing `mbarrier.try_wait` suspends the thread for an
+    // implementation-defined interval, so a large budget does not fail fast — it
+    // is what made the launch outlive a 60 second ceiling and produce nothing. A
+    // 1 KB copy either lands in a few hundred polls or is not coming.
+    const budget = 1 << 10;
+    var polls: u32 = 0;
+    var ok = false;
+    while (polls < budget) : (polls += 1) {
+        if (bar.tryWaitOnce(0)) {
+            ok = true;
+            break;
+        }
+    }
+    if (tid == 0) {
+        diag[Stage.wait_result] = if (ok) 1 else 0;
+        diag[Stage.polls_used] = polls;
+        writeState(diag, Stage.mbar_after_polls_lo, barState());
+    }
 
     const src: [*]addrspace(.shared) const u8 = @ptrCast(&tile_mem);
     var i = tid;
