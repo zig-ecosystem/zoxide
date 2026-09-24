@@ -40,3 +40,29 @@ pub const const_vs_ldg = struct {
 
     pub const signature = fn (out: [*]f32, in: [*]const f32, n: u32) void;
 };
+
+/// Geometry of the `tma_smoke` tile, shared because three separate things have to
+/// agree on it and only one of them is checkable at compile time:
+///
+///   - the shared-memory buffer the kernel reserves
+///   - the byte count handed to `mbarrier.arrive.expect_tx`
+///   - the `box` the host encodes into the descriptor
+///
+/// The byte count is the one that bites. Too low and the wait releases on partial
+/// data; too high and it never releases. Neither faults, and neither is reported.
+pub const tma_smoke = struct {
+    /// Source tensor, row-major.
+    pub const rows = 128;
+    pub const cols = 128;
+    /// Tile: innermost (columns) first, matching the descriptor's `box` order.
+    pub const box_cols = 64;
+    pub const box_rows = 8;
+    /// f16 elements, so the innermost tile row is 64 x 2 = 128 bytes — exactly one
+    /// period of a `.b128` swizzle, which is what makes the swizzled control a
+    /// clean comparison.
+    pub const elem_bytes = 2;
+    pub const tile_bytes = box_cols * box_rows * elem_bytes;
+    pub const block = 128;
+
+    pub const signature = fn (out: [*]u8, desc: u64, x: i32, y: i32) void;
+};

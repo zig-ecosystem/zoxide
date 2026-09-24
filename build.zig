@@ -185,6 +185,7 @@ pub fn build(b: *std.Build) void {
         .{ .name = "dev_global" },
         .{ .name = "const_bank" },
         .{ .name = "const_vs_ldg" },
+        .{ .name = "tma_smoke", .sm = sm_90a_model },
     };
 
     // `zig build kernels`: compile every kernel in src/examples/ to

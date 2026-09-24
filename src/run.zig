@@ -34,6 +34,7 @@ const examples = [_]Example{
     .{ .stem = "const_bank", .entry = "scaleByConst", .default_block = 256 },
     // Two entries; runConstVsLdg resolves both itself.
     .{ .stem = "const_vs_ldg", .entry = "constUniform", .default_block = 256 },
+    .{ .stem = "tma_smoke", .entry = "tmaSmoke", .default_block = 128 },
 };
 
 fn findExample(path: []const u8) ?Example {
@@ -145,6 +146,8 @@ pub fn run(
         try runConstBank(gpa, &ctx, mod, func, out)
     else if (std.mem.eql(u8, ex.stem, "const_vs_ldg"))
         try runConstVsLdg(gpa, &ctx, mod, out)
+    else if (std.mem.eql(u8, ex.stem, "tma_smoke"))
+        try runTmaSmoke(gpa, &ctx, func, out)
     else
         try runAtomicCounter(gpa, &ctx, func, args, out);
     return r;
@@ -153,6 +156,166 @@ pub fn run(
 fn fail(out: *std.Io.Writer, comptime fmt: []const u8, a: anytype) !u8 {
     try out.print("FAIL: " ++ fmt ++ "\n", a);
     return 1;
+}
+
+/// TMA: does a descriptor built by `encodeTensorMap` actually drive
+/// `cp.async.bulk.tensor` correctly?
+///
+/// Worth checking on its own because the `g2s` direction is hand-written asm —
+/// LLVM exposes no intrinsic for it — so ptxas has never assembled this
+/// construction here, and nothing about a wrong descriptor faults.
+///
+/// Two descriptors over the same tensor and the same tile:
+///
+///   swizzle .none  ->  shared memory holds the row-major tile, so a linear
+///                      readout must equal the source exactly
+///   swizzle .b128  ->  the hardware permutes 16-byte chunks, so the same
+///                      readout must differ
+///
+/// The second is the control. Without it, "matches the source" cannot be told
+/// apart from "the buffer happened to contain the right bytes" — the same gap
+/// `pad_before` closes in `const_bank`. It also confirms the swizzle field
+/// reaches the hardware at all, which is otherwise invisible: a mismatched
+/// swizzle is not an error, it just delivers permuted data.
+fn runTmaSmoke(
+    gpa: std.mem.Allocator,
+    ctx: *cu.Context,
+    func: cu.Function,
+    out: *std.Io.Writer,
+) !u8 {
+    const p = abi.tma_smoke;
+
+    // Source tensor, distinct per element so a permutation cannot go unnoticed.
+    const src = try gpa.alloc(u16, p.rows * p.cols);
+    defer gpa.free(src);
+    for (src, 0..) |*v, i| v.* = @intCast(i % 0xffff);
+
+    const dsrc = try ctx.alloc(src.len * @sizeOf(u16));
+    defer ctx.free(dsrc);
+    try ctx.copyHtoD(dsrc, std.mem.sliceAsBytes(src));
+
+    const dout = try ctx.alloc(p.tile_bytes);
+    defer ctx.free(dout);
+    const ddesc = try ctx.alloc(128);
+    defer ctx.free(ddesc);
+
+    const host_out = try gpa.alloc(u8, p.tile_bytes);
+    defer gpa.free(host_out);
+
+    // Deliberately not (0,0): a descriptor that ignores coordinates would pass at
+    // the origin.
+    const tile_x: i32 = 64;
+    const tile_y: i32 = 16;
+
+    // Innermost first, which is the driver's order and the reverse of how a
+    // row-major matrix is usually written.
+    const dim = [_]u64{ p.cols, p.rows };
+    const strides = [_]u64{p.cols * p.elem_bytes};
+    const box = [_]u32{ p.box_cols, p.box_rows };
+
+    // Allocated up front so an error partway through the loop cannot leak the
+    // first result.
+    var results: [2][]u8 = .{ try gpa.alloc(u8, p.tile_bytes), try gpa.alloc(u8, p.tile_bytes) };
+    defer for (results) |r| gpa.free(r);
+
+    const modes = [2]cu.Swizzle{ .none, .b128 };
+    for (modes, 0..) |sw, mi| {
+        const map = ctx.encodeTensorMap(f16, dsrc, dim[0..], strides[0..], box[0..], .{
+            .swizzle = sw,
+        }) catch {
+            try out.print("FAIL: encodeTensorMap({s}): {s}\n", .{ @tagName(sw), ctx.drv.lastError() });
+            return 1;
+        };
+        // The byte count the kernel waits on has to come from the descriptor, not
+        // from a second calculation.
+        if (map.tileBytes() != p.tile_bytes) {
+            return fail(out, "descriptor tile is {d} bytes, kernel reserves {d}", .{ map.tileBytes(), p.tile_bytes });
+        }
+        try ctx.copyHtoD(ddesc, std.mem.asBytes(&map.map));
+
+        // Zero the destination so a copy that silently does nothing shows up as
+        // zeros rather than as the previous round's data.
+        @memset(host_out, 0);
+        try ctx.copyHtoD(dout, host_out);
+
+        var arg_out = dout;
+        var arg_desc = ddesc;
+        var arg_x = tile_x;
+        var arg_y = tile_y;
+        var params = [_]?*anyopaque{ &arg_out, &arg_desc, &arg_x, &arg_y };
+        try func.launch(1, 1, 1, p.block, 1, 1, &params);
+        try ctx.synchronize();
+        try ctx.copyDtoH(results[mi], dout);
+    }
+
+    // Expected unswizzled tile, read straight out of the source.
+    const want = try gpa.alloc(u8, p.tile_bytes);
+    defer gpa.free(want);
+    for (0..p.box_rows) |r| {
+        const row_off = (@as(usize, @intCast(tile_y)) + r) * p.cols + @as(usize, @intCast(tile_x));
+        const bytes = std.mem.sliceAsBytes(src[row_off..][0..p.box_cols]);
+        @memcpy(want[r * p.box_cols * p.elem_bytes ..][0..bytes.len], bytes);
+    }
+
+    var mismatch: usize = 0;
+    var first: usize = 0;
+    for (results[0], want, 0..) |got, exp, i| {
+        if (got != exp) {
+            if (mismatch == 0) first = i;
+            mismatch += 1;
+        }
+    }
+    if (mismatch != 0) {
+        try out.print(
+            "FAIL: unswizzled tile differs in {d}/{d} bytes; first at {d} " ++
+                "(got 0x{x:0>2}, want 0x{x:0>2})\n",
+            .{ mismatch, p.tile_bytes, first, results[0][first], want[first] },
+        );
+        return 1;
+    }
+    try out.print("  swizzle .none: {d}/{d} bytes exact at tile ({d},{d})\n", .{
+        p.tile_bytes, p.tile_bytes, tile_x, tile_y,
+    });
+
+    // Control. Equality here would mean the swizzle field never reached the
+    // hardware, and that the unswizzled pass proves less than it appears to.
+    var differ: usize = 0;
+    for (results[1], results[0]) |a, b| {
+        if (a != b) differ += 1;
+    }
+    if (differ == 0) {
+        try out.print(
+            "FAIL: .b128 swizzle produced byte-identical output to .none. The " ++
+                "swizzle field is not reaching the hardware, so the unswizzled " ++
+                "result does not establish that the descriptor is driving the copy.\n",
+            .{},
+        );
+        return 1;
+    }
+    try out.print("  swizzle .b128: differs from .none in {d}/{d} bytes, as required\n", .{
+        differ, p.tile_bytes,
+    });
+
+    // Reported, not gated. The permutation is documented as XOR of the 16-byte
+    // chunk index with the row, but this is my model of it, and a mismatch here
+    // should not fail a test whose actual claim is the one above.
+    const chunk = 16;
+    const chunks_per_row = p.box_cols * p.elem_bytes / chunk;
+    var xor_ok = true;
+    for (0..p.box_rows) |r| {
+        for (0..chunks_per_row) |c| {
+            const permuted = c ^ (r % chunks_per_row);
+            const got = results[1][(r * chunks_per_row + c) * chunk ..][0..chunk];
+            const model = want[(r * chunks_per_row + permuted) * chunk ..][0..chunk];
+            if (!std.mem.eql(u8, got, model)) xor_ok = false;
+        }
+    }
+    try out.print("  (diagnostic) chunk_index ^ row model of the .b128 permutation: {s}\n", .{
+        if (xor_ok) "matches" else "does not match — the model here is wrong, not the copy",
+    });
+
+    try out.print("PASS: tma_smoke descriptor-driven 2D tile copy, {d} bytes exact + swizzle control\n", .{p.tile_bytes});
+    return 0;
 }
 
 /// Measure whether `.const` actually beats the read-only data cache for a

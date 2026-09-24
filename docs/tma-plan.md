@@ -110,10 +110,29 @@ LLVM 没有暴露这个方向的 intrinsic,生成器也就没产出。所以和
 产出:绑定 + 类型化描述符构造(维度/元素类型/swizzle 模式做成 enum,
 让非法组合变编译错误而不是 `CUDA_ERROR_INVALID_VALUE`)。
 
-### S1 — 最小 TMA smoke(需 GPU,不谈性能)
-一个 tile 的 global→shared 拷贝,逐字节比对。
-外加一条对照:**故意用错的 swizzle 模式**必须产生错值而不是通过
-——否则这个 smoke 无法区分「TMA 生效」和「碰巧读对」。
+### S1 — 最小 TMA smoke(需 GPU,不谈性能)✅ 已实现,待跑
+
+`tma_smoke`:128×128 f16 张量,取 (64,16) 处的 64×8 tile(**故意不取原点**
+——忽略坐标的描述符在原点会通过)。共享内存线性读出到 global,host 逐字节比对。
+
+对照用两个描述符跑同一个 kernel:
+
+| swizzle | 预期 |
+|---|---|
+| `.none` | 共享内存就是行主序 tile,线性读出**必须逐字节相符** |
+| `.b128` | 硬件置换 16 字节 chunk,同样的读出**必须不同** |
+
+第二条是对照。两者相同则说明 swizzle 字段没到硬件,那第一条也就证明不了
+「描述符在驱动这次拷贝」——和 `const_bank` 里 `pad_before` 补的是同一个洞。
+
+内层 tile 宽度取 64×2 = **128 字节 = 恰好一个 `.b128` 周期**,让对照干净。
+
+`chunk_index ^ row` 的置换模型只**报告不判定**:那是我对 swizzle 的理解,
+模型错不该让一个主张在别处的测试失败。
+
+`expect_tx` 的字节数从 `abi.tma_smoke.tile_bytes` 来,并与
+`map.tileBytes()` 交叉校验 —— 这个数写错不会 fault:偏小则 wait 在残缺数据上放行,
+偏大则永不放行。
 
 ### S2 — TMA 版 hgemm(需 GPU)
 tile 形状与 `hgemm_wgmma3` **完全一致**(m64n128k16 三级流水),只替换载入路径。

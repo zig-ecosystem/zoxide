@@ -460,10 +460,7 @@ pub const Context = struct {
         @memcpy(out.box[0..box.len], box);
 
         const encode = self.drv.cuTensorMapEncodeTiled orelse {
-            _ = self.fail(
-                "this driver has no cuTensorMapEncodeTiled; TMA needs CUDA 12 or newer",
-                .{},
-            );
+            self.record("this driver has no cuTensorMapEncodeTiled; TMA needs CUDA 12 or newer", .{});
             // Not InvalidValue: nothing is wrong with the arguments.
             return error.SymbolMissing;
         };
@@ -485,11 +482,15 @@ pub const Context = struct {
         return out;
     }
 
-    /// Record a rejected-before-the-driver message and return `InvalidValue`, so
-    /// the reason survives instead of becoming a bare error code.
-    fn fail(self: *Context, comptime fmt: []const u8, args: anytype) Error {
-        const m = std.fmt.bufPrint(&self.drv.err_buf, fmt, args) catch "invalid tensor map parameters";
+    /// Record why something was rejected before it reached the driver, so the
+    /// reason survives instead of becoming a bare error code.
+    fn record(self: *Context, comptime fmt: []const u8, args: anytype) void {
+        const m = std.fmt.bufPrint(&self.drv.err_buf, fmt, args) catch "invalid parameters";
         self.drv.err_len = m.len;
+    }
+
+    fn fail(self: *Context, comptime fmt: []const u8, args: anytype) Error {
+        self.record(fmt, args);
         return error.InvalidValue;
     }
 
