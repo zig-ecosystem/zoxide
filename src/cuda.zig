@@ -169,6 +169,73 @@ pub fn syncWarp(mask: u32) void {
     @"llvm.nvvm.bar.warp.sync"(mask);
 }
 
+/// Register class a type is loaded into. PTX asm constraints have to be written
+/// as string literals — the grammar takes a token, not an expression — so each
+/// class needs its own `asm` statement rather than a parameterised one.
+const RegClass = enum { b16, f32, f64, b32, b64 };
+
+fn regClass(comptime T: type) RegClass {
+    return switch (T) {
+        f16, u16, i16 => .b16,
+        f32 => .f32,
+        f64 => .f64,
+        // @Vector(2, f16) is two halves in one 32-bit register: the shape wgmma
+        // and the f16x2 math instructions want.
+        u32, i32, @Vector(2, f16) => .b32,
+        u64, i64 => .b64,
+        else => @compileError("ldg: unsupported type " ++ @typeName(T)),
+    };
+}
+
+/// Load through the read-only data cache — CUDA's `__ldg`, PTX `ld.global.nc`.
+///
+/// Beyond the caching hint, this load is opaque to the optimiser, and that is
+/// what makes it the only sound way to read a device global the host writes.
+/// LLVM assumes nothing outside the module writes a module-scope global, so an
+/// ordinary read can be constant-folded against the initialiser and the symbol
+/// dropped from the PTX entirely. Measured on zig 0.16.0 / LLVM 21.1.8: with
+/// `= .{ 10, 20, 30, 40 }` the symbol survived, and with `= .{ 0, 0, 0, 0 }` —
+/// the natural placeholder — the whole thing folded to a constant zero and the
+/// symbol disappeared. Host uploads would then be silently ignored. Reading via
+/// this function keeps the symbol and emits a real load either way.
+///
+/// The address must be in global memory. Kernel pointer parameters and
+/// `addrspace(.global)` declarations both are.
+///
+/// ```zig
+/// var dev_bias: [4]f32 addrspace(.global) = .{ 0, 0, 0, 0 };
+/// ...
+/// const b = cuda.ldg(f32, &dev_bias[i % 4]);
+/// ```
+///
+/// Safe against host writes between launches: the read-only cache does not
+/// survive a kernel boundary. It is *not* safe if something writes the same
+/// location during the launch — that is what `.nc` asserts does not happen.
+pub inline fn ldg(comptime T: type, p: anytype) T {
+    return switch (comptime regClass(T)) {
+        .b16 => @bitCast(asm volatile ("ld.global.nc.b16 %[o], [%[a]];"
+            : [o] "=h" (-> u16),
+            : [a] "l" (p),
+            : .{})),
+        .f32 => @bitCast(asm volatile ("ld.global.nc.f32 %[o], [%[a]];"
+            : [o] "=f" (-> f32),
+            : [a] "l" (p),
+            : .{})),
+        .f64 => @bitCast(asm volatile ("ld.global.nc.f64 %[o], [%[a]];"
+            : [o] "=d" (-> f64),
+            : [a] "l" (p),
+            : .{})),
+        .b32 => @bitCast(asm volatile ("ld.global.nc.b32 %[o], [%[a]];"
+            : [o] "=r" (-> u32),
+            : [a] "l" (p),
+            : .{})),
+        .b64 => @bitCast(asm volatile ("ld.global.nc.b64 %[o], [%[a]];"
+            : [o] "=l" (-> u64),
+            : [a] "l" (p),
+            : .{})),
+    };
+}
+
 const full_mask: i32 = -1; // 0xffffffff
 
 fn shflI32(comptime kind: enum { down, up, bfly, idx }, mask: u32, val: i32, off: i32, pack: i32) i32 {

@@ -29,6 +29,7 @@ const examples = [_]Example{
     .{ .stem = "debug_print", .entry = "debugPrint", .default_block = 32 },
     // One warpgroup, fixed: wgmma is a warpgroup-wide instruction.
     .{ .stem = "wgmma_smoke", .entry = "wgmmaSmoke", .default_block = 128 },
+    .{ .stem = "dev_global", .entry = "addBias", .default_block = 256 },
 };
 
 fn findExample(path: []const u8) ?Example {
@@ -134,6 +135,8 @@ pub fn run(
         try runDebugPrint(&ctx, func, out)
     else if (std.mem.eql(u8, ex.stem, "wgmma_smoke"))
         try runWgmmaSmoke(gpa, &ctx, func, out)
+    else if (std.mem.eql(u8, ex.stem, "dev_global"))
+        try runDevGlobal(gpa, &ctx, mod, func, out)
     else
         try runAtomicCounter(gpa, &ctx, func, args, out);
     return r;
@@ -142,6 +145,106 @@ pub fn run(
 fn fail(out: *std.Io.Writer, comptime fmt: []const u8, a: anytype) !u8 {
     try out.print("FAIL: " ++ fmt ++ "\n", a);
     return 1;
+}
+
+/// Verify the "host writes once, device reads by name" path end to end.
+///
+/// Three things can go wrong and they are worth separating, because only a GPU
+/// can tell them apart:
+///
+///   1. `cuModuleGetGlobal` cannot find the symbol — the PTX was not run through
+///      `zoxide ptx-export`, or ptxas does not honour the added `.visible`.
+///   2. The symbol resolves but its size is wrong, meaning the promotion matched
+///      something other than the intended declaration.
+///   3. The symbol resolves and writes appear to succeed, but the kernel ignores
+///      them because the read was constant-folded. Catching this is why the
+///      kernel runs twice with different tables instead of once.
+fn runDevGlobal(
+    gpa: std.mem.Allocator,
+    ctx: *cu.Context,
+    mod: cu.Module,
+    func: cu.Function,
+    out: *std.Io.Writer,
+) !u8 {
+    const symbol = "dev_global_$_dev_bias";
+    const g = mod.global(symbol) catch {
+        try out.print(
+            "FAIL: cannot resolve device global '{s}': {s}\n",
+            .{ symbol, ctx.drv.lastError() },
+        );
+        return 1;
+    };
+    const want_bytes = 4 * @sizeOf(f32);
+    if (g.bytes != want_bytes) {
+        return fail(out, "device global '{s}' is {d} bytes, expected {d}", .{ symbol, g.bytes, want_bytes });
+    }
+    try out.print("resolved device global '{s}': {d} bytes\n", .{ symbol, g.bytes });
+
+    const n: usize = 1024;
+    const block: u32 = 256;
+    const grid: u32 = @intCast((n + block - 1) / block);
+    const dout = try ctx.alloc(n * @sizeOf(f32));
+    defer ctx.free(dout);
+    const host = try gpa.alloc(f32, n);
+    defer gpa.free(host);
+
+    // Two different tables. The second is what proves host writes reach the
+    // kernel rather than the initialiser having been baked in.
+    const tables = [2][4]f32{
+        .{ 1, 2, 3, 4 },
+        .{ -100.5, 0.25, 7, 65536 },
+    };
+    for (tables, 0..) |table, round| {
+        try ctx.copyHtoD(g.ptr, std.mem.sliceAsBytes(table[0..]));
+        var arg_out = dout;
+        var arg_n: u32 = @intCast(n);
+        var params = [_]?*anyopaque{ &arg_out, &arg_n };
+        try func.launch(grid, 1, 1, block, 1, 1, &params);
+        try ctx.synchronize();
+        try ctx.copyDtoH(std.mem.sliceAsBytes(host), dout);
+
+        var bad: usize = 0;
+        var max_err: f64 = 0;
+        var first_bad: usize = 0;
+        for (host, 0..) |v, i| {
+            const want = @as(f64, @floatFromInt(i)) + @as(f64, table[i % 4]);
+            const err = @abs(@as(f64, v) - want);
+            if (err > max_err) max_err = err;
+            if (err != 0) {
+                if (bad == 0) first_bad = i;
+                bad += 1;
+            }
+        }
+        if (bad > 0) {
+            try out.print(
+                "FAIL: round {d} table {{{d}, {d}, {d}, {d}}}: {d}/{d} mismatches, " ++
+                    "max err {d}; out[{d}]={d} wanted {d}\n",
+                .{
+                    round,          table[0], table[1],   table[2],
+                    table[3],       bad,      n,          max_err,
+                    first_bad,      host[first_bad],
+                    @as(f64, @floatFromInt(first_bad)) + @as(f64, table[first_bad % 4]),
+                },
+            );
+            // Round 0 passing and round 1 failing is the folded-read signature:
+            // the kernel is using whatever was baked in, not what we uploaded.
+            if (round == 1) try out.print(
+                "  round 0 passed and round 1 did not: the kernel is not re-reading " ++
+                    "the global. Check that it reads through cuda.ldg().\n",
+                .{},
+            );
+            return 1;
+        }
+        try out.print("  round {d}: 1024/1024 exact with bias {{{d}, {d}, {d}, {d}}}\n", .{
+            round, table[0], table[1], table[2], table[3],
+        });
+    }
+
+    try out.print(
+        "PASS: dev_global host-written device global read by name, 2 rounds exact\n",
+        .{},
+    );
+    return 0;
 }
 
 fn runVectorAdd(gpa: std.mem.Allocator, ctx: *cu.Context, func: cu.Function, args: RunArgs, out: *std.Io.Writer) !u8 {

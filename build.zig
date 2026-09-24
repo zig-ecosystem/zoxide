@@ -156,7 +156,30 @@ pub fn build(b: *std.Build) void {
         .strip = true,
     });
 
-    const Example = struct { name: []const u8, sm: *const std.Target.Cpu.Model = default_sm_model };
+    // Built for the build host, not for `target`: the build graph runs it, so a
+    // cross-compiled bundle would otherwise produce a binary this machine cannot
+    // execute.
+    const ptx_promote = b.addExecutable(.{
+        .name = "ptx-promote",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tools/ptx-promote.zig"),
+            .target = b.graph.host,
+            .optimize = .Debug,
+        }),
+    });
+    ptx_promote.root_module.addImport("ptx", b.createModule(.{
+        .root_source_file = b.path("src/ptx.zig"),
+        .target = b.graph.host,
+        .optimize = .Debug,
+    }));
+
+    const Example = struct {
+        name: []const u8,
+        sm: *const std.Target.Cpu.Model = default_sm_model,
+        /// Comma-separated device globals to make resolvable by name from the
+        /// host. Empty for kernels that take everything through parameters.
+        export_globals: []const u8 = "",
+    };
     const examples = [_]Example{
         .{ .name = "vector_add" },
         .{ .name = "shared_reverse" },
@@ -179,6 +202,7 @@ pub fn build(b: *std.Build) void {
         .{ .name = "hgemm_wgmma3", .sm = sm_90a_model },
         .{ .name = "hgemm_wgmma4", .sm = sm_90a_model },
         .{ .name = "f16_native" },
+        .{ .name = "dev_global", .export_globals = "dev_bias" },
     };
 
     // `zig build kernels`: compile every kernel in src/examples/ to
@@ -192,7 +216,21 @@ pub fn build(b: *std.Build) void {
         const obj = addNvptxKernelObject(b, ex.name, source, b.path("src/cuda.zig"), .{ .sm = ex.sm });
         obj.root_module.addImport("examples_abi", examples_abi);
         const out_name = b.fmt("{s}.ptx", .{ex.name});
-        kernels_step.dependOn(&b.addInstallFileWithDir(obj.getEmittedAsm(), .{ .custom = "kernels" }, out_name).step);
+        const install = b.addInstallFileWithDir(obj.getEmittedAsm(), .{ .custom = "kernels" }, out_name);
+        if (ex.export_globals.len == 0) {
+            kernels_step.dependOn(&install.step);
+            continue;
+        }
+        // Zig cannot emit a device global the driver can resolve by name, so the
+        // installed PTX is rewritten to add `.visible`. This runs on the install
+        // output rather than the cache copy, because a later `zig build kernels`
+        // would otherwise overwrite the promoted file with the unpromoted one.
+        const promote = b.addRunArtifact(ptx_promote);
+        promote.addArg(b.fmt("{s}/kernels/{s}", .{ b.install_prefix, out_name }));
+        promote.addArgs(&.{"--globals"});
+        promote.addArg(b.fmt("{s}", .{ex.export_globals}));
+        promote.step.dependOn(&install.step);
+        kernels_step.dependOn(&promote.step);
     }
 
     // `zig build kernel`: single default kernel (kept for compatibility).
@@ -207,8 +245,17 @@ pub fn build(b: *std.Build) void {
             .link_libc = true,
         }),
     });
+    // PTX post-processing is pure text work, so it is testable on any host.
+    const ptx_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/ptx.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
     const test_step = b.step("test", "Run host-side unit tests");
     test_step.dependOn(&b.addRunArtifact(host_tests).step);
+    test_step.dependOn(&b.addRunArtifact(ptx_tests).step);
 
     const kernel_step = b.step("kernel", "Compile src/kernel.zig to PTX (zig-out/kernels/kernel.ptx)");
     kernel_step.dependOn(&addNvptxKernel(b, "kernel", b.path("src/kernel.zig"), b.path("src/cuda.zig"), .{}).step);

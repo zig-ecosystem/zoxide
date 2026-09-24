@@ -62,6 +62,7 @@ if [ "$DEGRADED" = 1 ]; then
         if have_ptx "$ex"; then record SKIP "run/$ex" "no GPU"; else record SKIP "run/$ex" "PTX missing"; fi
     done
     if have_ptx wgmma_smoke; then record SKIP "run/wgmma_smoke" "no GPU"; else record SKIP "run/wgmma_smoke" "PTX missing"; fi
+    if have_ptx dev_global; then record SKIP "run/dev_global" "no GPU"; else record SKIP "run/dev_global" "PTX missing"; fi
     if have_ptx sgemm_swz; then record SKIP "bench/sgemm_swz" "no GPU"; else record SKIP "bench/sgemm_swz" "PTX missing"; fi
     for k in hgemm_wgmma hgemm_wgmma2 hgemm_wgmma3; do
         if have_ptx "$k"; then record SKIP "bench/$k" "no GPU"; else record SKIP "bench/$k" "PTX missing"; fi
@@ -95,6 +96,28 @@ else
         record SKIP "run/wgmma_smoke" "sm_90a unavailable: $(echo "$out" | tail -1)"
     else
         record FAIL "run/wgmma_smoke" "$(echo "$out" | tail -1)"
+    fi
+fi
+
+# 2c. host-written device global read by name on the device. This is the first
+#     check of a path Zig cannot express on its own: the PTX symbol is made
+#     visible by a post-pass ('zoxide ptx-export'), and whether ptxas honours
+#     that is not something a machine without a GPU can answer. The two failure
+#     modes are worth keeping apart in the report:
+#       - cannot resolve the symbol -> the .visible promotion did not take
+#       - resolves but round 1 differs -> the kernel is not re-reading it
+if ! have_ptx dev_global; then
+    record SKIP "run/dev_global" "PTX missing"
+elif ! grep -q '^\.visible \.global.*dev_bias' "$PTXDIR/dev_global.ptx"; then
+    record FAIL "run/dev_global" "PTX has no '.visible .global ... dev_bias' — build did not run 'zoxide ptx-export'"
+else
+    out=$("$ZOXIDE" run "$PTXDIR/dev_global.ptx" 2>&1)
+    if echo "$out" | grep -q '^PASS'; then
+        record PASS "run/dev_global" "$(echo "$out" | grep -m1 '^PASS')"
+    elif echo "$out" | grep -q 'cannot resolve device global'; then
+        record FAIL "run/dev_global" "ptxas did not expose the promoted symbol: $(echo "$out" | tail -1)"
+    else
+        record FAIL "run/dev_global" "$(echo "$out" | tail -2 | tr '\n' ' ')"
     fi
 fi
 

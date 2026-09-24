@@ -64,6 +64,11 @@ pub const Error = error{
     SymbolMissing,
     /// A module does not export the requested kernel name.
     KernelNotFound,
+    /// A module does not export the requested device global. Distinct from
+    /// `KernelNotFound` because the usual cause is different: Zig emits
+    /// module-scope globals without `.visible`, so the symbol exists in the PTX
+    /// but is not in the cubin's symbol table. See `Module.global`.
+    GlobalNotFound,
     /// The device is out of memory.
     CudaOutOfMemory,
     /// The cubin contains no code for this GPU — usually built for another `sm_`.
@@ -100,6 +105,10 @@ pub const Driver = struct {
     cuCtxSetCurrent: *const fn (ctx: CUcontext) callconv(.c) c_int,
     cuModuleLoadData: *const fn (module: *CUmodule, image: ?*const anyopaque) callconv(.c) c_int,
     cuModuleGetFunction: *const fn (hfunc: *CUfunction, hmod: CUmodule, name: [*:0]const u8) callconv(.c) c_int,
+    // Resolves a device global by name, which is the only way to implement the
+    // "host writes once, device reads by name" pattern (CUDA's
+    // `cudaMemcpyToSymbol`). Requires the symbol to be `.visible` in the PTX.
+    cuModuleGetGlobal_v2: *const fn (dptr: *CUdeviceptr, bytes: *usize, hmod: CUmodule, name: [*:0]const u8) callconv(.c) c_int,
     cuMemAlloc_v2: *const fn (dptr: *CUdeviceptr, bytesize: usize) callconv(.c) c_int,
     cuMemFree_v2: *const fn (dptr: CUdeviceptr) callconv(.c) c_int,
     cuMemcpyHtoD_v2: *const fn (dstDevice: CUdeviceptr, srcHost: ?*const anyopaque, byteCount: usize) callconv(.c) c_int,
@@ -447,6 +456,49 @@ pub const Module = struct {
         }
         try self.drv.check(r);
         return .{ .drv = self.drv, .f = f };
+    }
+
+    /// Resolve a device global by PTX symbol name, returning its device address
+    /// and size. This is the host half of "host writes once, device reads by
+    /// name"; pair it with `copyHtoD`/`copyDtoH`.
+    ///
+    /// Zig cannot currently produce a symbol this call can find on its own. A
+    /// module-scope `var` reaches the PTX as plain `.global` with no `.visible`,
+    /// which ptxas keeps module-local, and every way of asking for external
+    /// linkage fails in the NVPTX backend (measured on zig 0.16.0 / LLVM
+    /// 21.1.8):
+    ///
+    ///   - `export var x addrspace(.global)` -> "Alias and aliasee types don't match"
+    ///   - `@export(&x, .{ .linkage = .strong })` -> same
+    ///   - `export var x` (no addrspace) -> "NVPTX aliasee must be a non-kernel
+    ///     function definition", which aborts the compiler
+    ///
+    /// The cause is that Zig implements `export` on a variable as an LLVM alias,
+    /// and NVPTX only accepts aliases whose aliasee is a non-kernel function. So
+    /// the promotion to `.visible` happens in a PTX post-pass instead; see
+    /// `ptx.promoteGlobals`.
+    pub fn global(self: Module, name: [:0]const u8) Error!struct { ptr: CUdeviceptr, bytes: usize } {
+        var p: CUdeviceptr = 0;
+        var n: usize = 0;
+        const r = self.drv.cuModuleGetGlobal_v2(&p, &n, self.m, name.ptr);
+        if (r == cuda_error_not_found) {
+            const m = std.fmt.bufPrint(
+                &self.drv.err_buf,
+                "device global '{s}' not found in module. Two different causes " ++
+                    "look alike here: (1) the name — the PTX symbol is " ++
+                    "<root source file stem>_$_<decl>, e.g. kernel_$_dev_scale " ++
+                    "for kernel.zig; (2) visibility — Zig emits module-scope " ++
+                    "globals without '.visible', so the symbol is module-local " ++
+                    "and absent from the cubin symbol table even when the name " ++
+                    "is right. Run the PTX through 'zoxide ptx --promote-globals' " ++
+                    "to fix (2)",
+                .{name},
+            ) catch "device global not found in module";
+            self.drv.err_len = m.len;
+            return error.GlobalNotFound;
+        }
+        try self.drv.check(r);
+        return .{ .ptr = p, .bytes = n };
     }
 };
 
