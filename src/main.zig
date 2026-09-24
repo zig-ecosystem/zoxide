@@ -3,7 +3,6 @@ const run_cmd = @import("run.zig");
 const scaffold = @import("scaffold.zig");
 const bench_cmd = @import("bench.zig");
 const gen_cmd = @import("gen.zig");
-const ptx_pass = @import("ptx.zig");
 
 /// Baseline GPU: NVIDIA H20 (Hopper, compute capability 9.0).
 const default_sm = "sm_90";
@@ -39,8 +38,6 @@ pub fn main(init: std.process.Init) !u8 {
     const cmd = args[1];
     if (std.mem.eql(u8, cmd, "ptx")) {
         return cmdPtx(gpa, io, args[2..]);
-    } else if (std.mem.eql(u8, cmd, "ptx-export")) {
-        return cmdPtxExport(gpa, io, args[2..]);
     } else if (std.mem.eql(u8, cmd, "cubin")) {
         return cmdCubin(gpa, io, init.environ_map, args[2..]);
     } else if (std.mem.eql(u8, cmd, "doctor")) {
@@ -109,29 +106,8 @@ fn parseIoArgs(args: []const [:0]const u8, allow_arch: bool) !Parsed {
 }
 
 fn cmdPtx(gpa: std.mem.Allocator, io: std.Io, args: []const [:0]const u8) !u8 {
-    // `--export-globals a,b` is specific to this subcommand, so pull it out
-    // before the shared -o/--arch parser sees it.
-    var rest: std.ArrayList([:0]const u8) = .empty;
-    defer rest.deinit(gpa);
-    var export_globals: ?[]const u8 = null;
-    {
-        var i: usize = 0;
-        while (i < args.len) : (i += 1) {
-            if (std.mem.eql(u8, args[i], "--export-globals")) {
-                i += 1;
-                if (i >= args.len) {
-                    std.debug.print("error: --export-globals needs a comma-separated list of declaration names\n", .{});
-                    return 1;
-                }
-                export_globals = args[i];
-            } else {
-                try rest.append(gpa, args[i]);
-            }
-        }
-    }
-
-    const parsed = parseIoArgs(rest.items, true) catch {
-        std.debug.print("error: expected 'zoxide ptx <kernel.zig> -o out.ptx [--arch sm_XX] [--export-globals a,b]'\n", .{});
+    const parsed = parseIoArgs(args, true) catch {
+        std.debug.print("error: expected 'zoxide ptx <kernel.zig> -o out.ptx [--arch sm_XX]'\n", .{});
         return 1;
     };
     if (!validateArch(parsed.arch)) {
@@ -164,22 +140,8 @@ fn cmdPtx(gpa: std.mem.Allocator, io: std.Io, args: []const [:0]const u8) !u8 {
         return 1;
     }
 
-    if (export_globals) |csv| {
-        if (try ptx_pass.applyToFile(gpa, io, parsed.output, parsed.output, csv)) |code| return code;
-    }
-
     std.debug.print("wrote PTX: {s}\n", .{parsed.output});
     return 0;
-}
-
-/// `zoxide ptx-export <in.ptx> --globals a,b [-o out.ptx]`
-///
-/// The promotion is a PTX-to-PTX transform, so it gets its own entry point:
-/// kernels are normally built through build.zig (which wires the `cuda` module),
-/// not through `zoxide ptx`, and this lets the pass run on an already-installed
-/// .ptx without recompiling.
-fn cmdPtxExport(gpa: std.mem.Allocator, io: std.Io, args: []const [:0]const u8) !u8 {
-    return ptx_pass.cliMain(gpa, io, args);
 }
 
 fn cmdCubin(gpa: std.mem.Allocator, io: std.Io, env: *std.process.Environ.Map, args: []const [:0]const u8) !u8 {

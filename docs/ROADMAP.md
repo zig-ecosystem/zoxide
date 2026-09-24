@@ -111,28 +111,41 @@ f16/f16x2/bf16/bf16x2 wrapper 仍有价值——它们覆盖 `ftz`/`nan`/`xorsig
   无 `export` 的 `.global` 符号无 `.visible`；`export var`(带/不带 addrspace)与 `@export`
   全部撞 LLVM alias 限制，其中裸 `export var` **直接 abort 编译器**
 - [x] 根因定位：Zig 把变量的 `export` 降成 LLVM alias，NVPTX 只接受 aliasee 是非 kernel 函数的 alias
-- [x] `src/ptx.zig`：PTX 后处理加 `.visible`（只改声明行，访问指令不动），三态结果
-  （promoted / already / missing），missing 直接失败而不是留到 GPU 上才炸
-- [x] `zoxide ptx-export` 子命令 + `zig build kernels` 自动调用（`export_globals`）
+- [x] ~~`src/ptx.zig` PTX 后处理加 `.visible`、`zoxide ptx-export` 子命令、
+  `tools/ptx-promote.zig`~~ —— **全部已删，实测证明针对的是不存在的问题**：
+  反向对照（把 `.visible` 剥掉再跑）显示 ptxas 本来就把 module-scope `.global`
+  暴露给 `cuModuleGetGlobal`。**教训：先做反向对照，再写绕法**
 - [x] **第二个更隐蔽的坑**：LLVM 假设模块外无写者，普通读取被常量折叠、符号被丢弃，
   且**取决于初始值**——`.{10,20,30,40}` 保留，`.{0,0,0,0}`（最自然的占位）折成常量 0 并
   删除符号，host 上传被静默忽略。`cuda.ldg()`（inline asm `ld.global.nc`，对优化器不透明）
   解决，顺带拿到只读缓存路径（= CUDA `__ldg`）
 - [x] host 侧：绑定 `cuModuleGetGlobal_v2`，`Module.global()` 把 NOT_FOUND 映射为
-  `GlobalNotFound` 并点出两个长得一样的成因（名字错 / 符号是模块局部的）
-- [x] 构建期工具 `tools/ptx-promote.zig` 编成**宿主原生**——构建图要跑它，
-  跟 `-Dtarget` 走会导致交叉编译 bundle 时产出本机跑不了的二进制（已实测撞到）
-- [x] **H20 实测通过**（`devglobal-20260924`）：ptxas 接受后加的 `.visible`，
+  `GlobalNotFound` 并点出两个长得一样的成因（名字错 / 符号被常量折叠掉了）
+- [x] **H20 实测通过**（`devglobal-20260924`）：
   `cuModuleGetGlobal` 解析到符号且大小正确（16 B），两轮不同的表
   （`{1,2,3,4}` 与 `{-100.5, 0.25, 7, 65536}`）各 1024/1024 精确 ——
   证明 device 每次 launch 重读，而非把值烤进代码
-- [ ] 反向对照待跑（`devglobal-neg2-20260924`）：把 `.visible` 去掉是否**真的**解析不到。
-  「promoted 能用」同时也符合「ptxas 本来就暴露 module-scope global」，
-  那样这个 pass 就该删掉
+- [x] 反向对照（`devglobal-neg2-20260924`）：**否定结果** —— 剥掉 `.visible` 照样能解析，
+  pass 多余，已删。做这个对照的价值就在这里：它否掉的是我自己加的复杂度
   - 第一版对照（`devglobal-neg-20260924`）**无效**：`zoxide run` 按文件名 stem 选
     example，剥离后的副本写成 `dev_global_unpromoted.ptx`，于是在 unknown-example
     检查处就退出了，根本没走到 `cuModuleGetGlobal`。而脚本把「没 PASS」当成了确认。
     教训：反向对照必须要求**那条具体错误**，否则它会因为无关原因「通过」
+
+### v0.0.14 — 真正的 constant memory（`.const` 存储体）
+- [x] 推翻「constant memory 不可达、只能递上游」的结论。**模块级 inline asm 可以直接
+  发出 `.const` 声明**，Zig 逐字透传，配合 `ld.const` 就是真正的 constant 存储体
+  ——不是 `addrspace(.constant)` 那条落到 `.global` + `ld.global.nc` 的假路
+- [x] `cuda.ConstBank(name, T, len)`：`declaration` 暴露成字符串常量而非 `declare()`
+  函数——模块级 asm 必须直接出现在 file-scope `comptime` 块里，包成函数调用会报
+  "unable to evaluate comptime expression"；`get(i)` 按 5 个寄存器类分派
+- [x] 寻址必须**相对符号**：`mov.u64 %b, sym; add; ld.const.T [%b]`。直接把裸字节偏移
+  喂给 `ld.const` 会从 const 窗口起点读，当 bank 是窗口里唯一对象时会「碰巧正确」
+  ——example 里放了 `pad_before[64]` 把 table 推离起点，让寻址错误暴露成错值而不是通过
+- [x] 符号名**不经 mangling**（asm 逐字透传），host 查 `const_scales` 而非
+  `const_bank_$_const_scales`
+- [ ] 待 GPU 验证（`constmem-20260924`）：ptxas 是否接受 asm 发出的 `.const` 声明、
+  `cuModuleGetGlobal` 能否解析 `.const` 符号、两轮不同表证明每次 launch 重读
 
 ### v1.0.0 — 稳定化
 

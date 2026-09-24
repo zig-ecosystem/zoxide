@@ -30,6 +30,7 @@ const examples = [_]Example{
     // One warpgroup, fixed: wgmma is a warpgroup-wide instruction.
     .{ .stem = "wgmma_smoke", .entry = "wgmmaSmoke", .default_block = 128 },
     .{ .stem = "dev_global", .entry = "addBias", .default_block = 256 },
+    .{ .stem = "const_bank", .entry = "scaleByConst", .default_block = 256 },
 };
 
 fn findExample(path: []const u8) ?Example {
@@ -137,6 +138,8 @@ pub fn run(
         try runWgmmaSmoke(gpa, &ctx, func, out)
     else if (std.mem.eql(u8, ex.stem, "dev_global"))
         try runDevGlobal(gpa, &ctx, mod, func, out)
+    else if (std.mem.eql(u8, ex.stem, "const_bank"))
+        try runConstBank(gpa, &ctx, mod, func, out)
     else
         try runAtomicCounter(gpa, &ctx, func, args, out);
     return r;
@@ -147,18 +150,120 @@ fn fail(out: *std.Io.Writer, comptime fmt: []const u8, a: anytype) !u8 {
     return 1;
 }
 
+/// Verify real CUDA constant memory — PTX `.const`, not read-only global.
+///
+/// The symbol name is the give-away that this is a different mechanism: module-
+/// scope assembly is emitted verbatim, so it is `const_scales`, with none of the
+/// `<stem>_$_` mangling a kernel or a Zig-declared global gets.
+///
+/// Two rounds with different tables, for the same reason as `dev_global`: a bank
+/// that resolves but is not re-read would pass a single round. The kernel also
+/// reads at an offset behind a padding object, so wrong addressing — feeding
+/// `ld.const` a bare byte offset instead of a symbol-relative one — produces
+/// wrong values rather than accidentally correct ones.
+fn runConstBank(
+    gpa: std.mem.Allocator,
+    ctx: *cu.Context,
+    mod: cu.Module,
+    func: cu.Function,
+    out: *std.Io.Writer,
+) !u8 {
+    const symbol = "const_scales";
+    const bank_len = 64;
+    const g = mod.global(symbol) catch {
+        try out.print(
+            "FAIL: cannot resolve constant bank '{s}': {s}\n" ++
+                "  note: module-scope asm is not mangled, so the symbol is '{s}', " ++
+                "not '<stem>_$_{s}'\n",
+            .{ symbol, ctx.drv.lastError(), symbol, symbol },
+        );
+        return 1;
+    };
+    const want_bytes = bank_len * @sizeOf(f32);
+    if (g.bytes != want_bytes) {
+        return fail(out, "constant bank '{s}' is {d} bytes, expected {d}", .{ symbol, g.bytes, want_bytes });
+    }
+    try out.print("resolved constant bank '{s}': {d} bytes (.const state space)\n", .{ symbol, g.bytes });
+
+    const n: usize = 4096;
+    const block: u32 = 256;
+    const grid: u32 = @intCast((n + block - 1) / block);
+    const din = try ctx.alloc(n * @sizeOf(f32));
+    defer ctx.free(din);
+    const dout = try ctx.alloc(n * @sizeOf(f32));
+    defer ctx.free(dout);
+
+    const input = try gpa.alloc(f32, n);
+    defer gpa.free(input);
+    for (input, 0..) |*v, i| v.* = @floatFromInt(i % 97);
+    try ctx.copyHtoD(din, std.mem.sliceAsBytes(input));
+
+    const host = try gpa.alloc(f32, n);
+    defer gpa.free(host);
+
+    var scales: [bank_len]f32 = undefined;
+    for (0..2) |round| {
+        for (&scales, 0..) |*s, i| {
+            s.* = if (round == 0)
+                @floatFromInt(i + 1)
+            else
+                -0.5 * @as(f32, @floatFromInt(i)) + 0.25;
+        }
+        try ctx.copyHtoD(g.ptr, std.mem.sliceAsBytes(scales[0..]));
+
+        var arg_out = dout;
+        var arg_in = din;
+        var arg_n: u32 = @intCast(n);
+        var params = [_]?*anyopaque{ &arg_out, &arg_in, &arg_n };
+        try func.launch(grid, 1, 1, block, 1, 1, &params);
+        try ctx.synchronize();
+        try ctx.copyDtoH(std.mem.sliceAsBytes(host), dout);
+
+        var bad: usize = 0;
+        var first_bad: usize = 0;
+        var max_err: f64 = 0;
+        for (host, 0..) |v, i| {
+            const want = @as(f64, input[i]) * @as(f64, scales[i % bank_len]);
+            const err = @abs(@as(f64, v) - want);
+            if (err > max_err) max_err = err;
+            if (err != 0) {
+                if (bad == 0) first_bad = i;
+                bad += 1;
+            }
+        }
+        if (bad > 0) {
+            try out.print(
+                "FAIL: round {d}: {d}/{d} mismatches, max err {d}; out[{d}]={d} wanted {d}\n",
+                .{
+                    round, bad, n, max_err, first_bad, host[first_bad],
+                    @as(f64, input[first_bad]) * @as(f64, scales[first_bad % bank_len]),
+                },
+            );
+            if (round == 1) try out.print(
+                "  round 0 passed and round 1 did not: the bank is not being re-read\n",
+                .{},
+            );
+            return 1;
+        }
+        try out.print("  round {d}: {d}/{d} exact\n", .{ round, n, n });
+    }
+
+    try out.print("PASS: const_bank .const state space, host-written, 2 rounds exact\n", .{});
+    return 0;
+}
+
 /// Verify the "host writes once, device reads by name" path end to end.
 ///
 /// Three things can go wrong and they are worth separating, because only a GPU
 /// can tell them apart:
 ///
-///   1. `cuModuleGetGlobal` cannot find the symbol — the PTX was not run through
-///      `zoxide ptx-export`, or ptxas does not honour the added `.visible`.
-///   2. The symbol resolves but its size is wrong, meaning the promotion matched
-///      something other than the intended declaration.
+///   1. `cuModuleGetGlobal` cannot find the symbol — wrong mangled name, or the
+///      global was folded away and is not in the PTX at all.
+///   2. The symbol resolves but its size is wrong, so the name matched something
+///      other than the intended declaration.
 ///   3. The symbol resolves and writes appear to succeed, but the kernel ignores
-///      them because the read was constant-folded. Catching this is why the
-///      kernel runs twice with different tables instead of once.
+///      them because the read was constant-folded against the initialiser.
+///      Catching this is why the kernel runs twice with different tables.
 fn runDevGlobal(
     gpa: std.mem.Allocator,
     ctx: *cu.Context,

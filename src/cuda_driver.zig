@@ -65,9 +65,9 @@ pub const Error = error{
     /// A module does not export the requested kernel name.
     KernelNotFound,
     /// A module does not export the requested device global. Distinct from
-    /// `KernelNotFound` because the usual cause is different: Zig emits
-    /// module-scope globals without `.visible`, so the symbol exists in the PTX
-    /// but is not in the cubin's symbol table. See `Module.global`.
+    /// `KernelNotFound` because the usual cause is different: the global was
+    /// constant-folded away by LLVM and is not in the PTX at all. See
+    /// `Module.global`.
     GlobalNotFound,
     /// The device is out of memory.
     CudaOutOfMemory,
@@ -462,21 +462,17 @@ pub const Module = struct {
     /// and size. This is the host half of "host writes once, device reads by
     /// name"; pair it with `copyHtoD`/`copyDtoH`.
     ///
-    /// Zig cannot currently produce a symbol this call can find on its own. A
-    /// module-scope `var` reaches the PTX as plain `.global` with no `.visible`,
-    /// which ptxas keeps module-local, and every way of asking for external
-    /// linkage fails in the NVPTX backend (measured on zig 0.16.0 / LLVM
-    /// 21.1.8):
+    /// Measured on H20: a module-scope `var` reaches the PTX as plain `.global`
+    /// with no `.visible`, and this call resolves it anyway — confirmed by
+    /// stripping `.visible` off a working module and watching it keep working.
+    /// So no linkage games are needed, which is fortunate: every way of asking
+    /// Zig for external linkage on a variable fails on nvptx (zig 0.16.0 / LLVM
+    /// 21.1.8), and a plain `export var x` aborts the compiler.
     ///
-    ///   - `export var x addrspace(.global)` -> "Alias and aliasee types don't match"
-    ///   - `@export(&x, .{ .linkage = .strong })` -> same
-    ///   - `export var x` (no addrspace) -> "NVPTX aliasee must be a non-kernel
-    ///     function definition", which aborts the compiler
-    ///
-    /// The cause is that Zig implements `export` on a variable as an LLVM alias,
-    /// and NVPTX only accepts aliases whose aliasee is a non-kernel function. So
-    /// the promotion to `.visible` happens in a PTX post-pass instead; see
-    /// `ptx.promoteGlobals`.
+    /// What does need care is the device side. LLVM assumes nothing outside the
+    /// module writes a module-scope global, so an ordinary read is folded
+    /// against the initialiser and the symbol is dropped from the PTX — which
+    /// surfaces here as `GlobalNotFound`. Read it with `cuda.ldg()`.
     pub fn global(self: Module, name: [:0]const u8) Error!struct { ptr: CUdeviceptr, bytes: usize } {
         var p: CUdeviceptr = 0;
         var n: usize = 0;

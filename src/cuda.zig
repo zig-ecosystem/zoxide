@@ -236,6 +236,127 @@ pub inline fn ldg(comptime T: type, p: anytype) T {
     };
 }
 
+/// Decimal digits of a comptime integer, so asm templates can be built without
+/// pulling `std.fmt` into a freestanding module.
+fn decimal(comptime n: usize) []const u8 {
+    if (n == 0) return "0";
+    comptime var buf: [20]u8 = undefined;
+    comptime var i: usize = buf.len;
+    comptime var v = n;
+    inline while (v != 0) {
+        i -= 1;
+        buf[i] = '0' + @as(u8, @intCast(v % 10));
+        v /= 10;
+    }
+    return buf[i..];
+}
+
+/// CUDA constant memory — the PTX `.const` state space, not just read-only
+/// global memory.
+///
+/// Zig has no way to declare this. `var x addrspace(.constant)` is rejected
+/// outright ("mutable values with address space 'constant' are not supported on
+/// nvptx"), and the immutable form compiles but lands in `.global` with
+/// `ld.global.nc`, which is the read-only data cache rather than the constant
+/// bank — and is not writable from the host, which defeats the purpose.
+///
+/// So the declaration is emitted as module-scope inline assembly and accessed
+/// with `ld.const`. The host writes it by name through
+/// `Module.global`/`copyHtoD`, exactly as with a device global.
+///
+/// What this buys over `ldg` on a device global: `.const` is a separate 64 KB
+/// window with a broadcast-optimised cache, so a warp reading one address is a
+/// single fetch. Worth it for small tables every thread reads together
+/// (convolution weights, quantisation scales, hyperparameters); pointless for
+/// large or thread-divergent data, where `ldg` is the right tool.
+///
+/// Usage — the declaration has to sit in a comptime block at file scope, because
+/// that is where module-scope assembly belongs:
+///
+/// ```zig
+/// const Weights = cuda.ConstBank("weights", f32, 64);
+/// comptime { asm (Weights.declaration); }
+///
+/// pub fn k(out: [*]f32) callconv(.kernel) void {
+///     out[i] = Weights.get(i % 64);
+/// }
+/// ```
+///
+/// Host side, with `<stem>_$_` mangling deliberately absent: the symbol is
+/// whatever name is passed here, because inline assembly is emitted verbatim.
+///
+/// ```zig
+/// const w = try mod.global("weights");
+/// try ctx.copyHtoD(w.ptr, std.mem.sliceAsBytes(&table));
+/// ```
+pub fn ConstBank(comptime name: []const u8, comptime T: type, comptime len: usize) type {
+    return struct {
+        /// PTX symbol name. Not mangled — module-scope asm is passed through as
+        /// written, so this is also the name the host looks up.
+        pub const symbol = name;
+        pub const count = len;
+        pub const bytes = len * @sizeOf(T);
+
+        /// The `.const` declaration, to be emitted once from a file-scope
+        /// comptime block:
+        ///
+        /// ```zig
+        /// comptime { asm (Scales.declaration); }
+        /// ```
+        ///
+        /// Exposed as a string rather than a `declare()` function because
+        /// module-scope assembly has to appear directly in a comptime block —
+        /// calling a function that contains it fails with "unable to evaluate
+        /// comptime expression".
+        ///
+        /// Emitting it twice under the same `name` produces a duplicate
+        /// declaration and ptxas rejects the module.
+        pub const declaration = ".const .align " ++ decimal(@alignOf(T)) ++
+            " .b8 " ++ name ++ "[" ++ decimal(bytes) ++ "];";
+
+        /// Read element `i`. No bounds check: this compiles to three
+        /// instructions and a branch would defeat the point. Reading past the
+        /// end reads whatever else is in the constant window.
+        pub inline fn get(i: u32) T {
+            return switch (comptime regClass(T)) {
+                .b16 => @bitCast(asm volatile (load_template("b16", "%[r]")
+                    : [r] "=h" (-> u16),
+                    : [off] "r" (i * @sizeOf(T)),
+                    : .{})),
+                .f32 => @bitCast(asm volatile (load_template("f32", "%[r]")
+                    : [r] "=f" (-> f32),
+                    : [off] "r" (i * @sizeOf(T)),
+                    : .{})),
+                .f64 => @bitCast(asm volatile (load_template("f64", "%[r]")
+                    : [r] "=d" (-> f64),
+                    : [off] "r" (i * @sizeOf(T)),
+                    : .{})),
+                .b32 => @bitCast(asm volatile (load_template("b32", "%[r]")
+                    : [r] "=r" (-> u32),
+                    : [off] "r" (i * @sizeOf(T)),
+                    : .{})),
+                .b64 => @bitCast(asm volatile (load_template("b64", "%[r]")
+                    : [r] "=l" (-> u64),
+                    : [off] "r" (i * @sizeOf(T)),
+                    : .{})),
+            };
+        }
+
+        /// Address has to be formed relative to the symbol. Feeding a bare byte
+        /// offset to `ld.const` reads from the start of the constant window,
+        /// which silently happens to work when the bank is the only object in it
+        /// and breaks as soon as it is not.
+        fn load_template(comptime suffix: []const u8, comptime dst: []const u8) []const u8 {
+            return "{ .reg .u64 %zcb; .reg .u64 %zco;\n" ++
+                "  mov.u64 %zcb, " ++ name ++ ";\n" ++
+                "  cvt.u64.u32 %zco, %[off];\n" ++
+                "  add.u64 %zcb, %zcb, %zco;\n" ++
+                "  ld.const." ++ suffix ++ " " ++ dst ++ ", [%zcb];\n" ++
+                "}";
+        }
+    };
+}
+
 const full_mask: i32 = -1; // 0xffffffff
 
 fn shflI32(comptime kind: enum { down, up, bfly, idx }, mask: u32, val: i32, off: i32, pack: i32) i32 {
