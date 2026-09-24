@@ -126,9 +126,13 @@ f16/f16x2/bf16/bf16x2 wrapper 仍有价值——它们覆盖 `ftz`/`nan`/`xorsig
   `cuModuleGetGlobal` 解析到符号且大小正确（16 B），两轮不同的表
   （`{1,2,3,4}` 与 `{-100.5, 0.25, 7, 65536}`）各 1024/1024 精确 ——
   证明 device 每次 launch 重读，而非把值烤进代码
-- [ ] 反向对照待跑（`devglobal-neg-20260924`）：把 `.visible` 去掉是否**真的**解析不到。
+- [ ] 反向对照待跑（`devglobal-neg2-20260924`）：把 `.visible` 去掉是否**真的**解析不到。
   「promoted 能用」同时也符合「ptxas 本来就暴露 module-scope global」，
   那样这个 pass 就该删掉
+  - 第一版对照（`devglobal-neg-20260924`）**无效**：`zoxide run` 按文件名 stem 选
+    example，剥离后的副本写成 `dev_global_unpromoted.ptx`，于是在 unknown-example
+    检查处就退出了，根本没走到 `cuModuleGetGlobal`。而脚本把「没 PASS」当成了确认。
+    教训：反向对照必须要求**那条具体错误**，否则它会因为无关原因「通过」
 
 ### v1.0.0 — 稳定化
 

@@ -27,11 +27,22 @@ echo "== negative control: same PTX with .visible removed =="
 #
 # Expected: 'cannot resolve device global'. If it PASSES, the promotion is not
 # needed and should be deleted.
-sed 's/^\.visible \.global/.global/' kernels/dev_global.ptx > /tmp/dev_global_unpromoted.ptx
-grep -n 'dev_bias\[16\]' /tmp/dev_global_unpromoted.ptx
-if ./zoxide run /tmp/dev_global_unpromoted.ptx 2>&1 | tee /tmp/unpromoted.log | grep -q '^PASS'; then
-    echo "UNEXPECTED: unpromoted PTX also works — the .visible pass is not needed"
+# The basename has to stay dev_global.ptx: 'zoxide run' picks the example by
+# filename stem, so renaming the file makes the run fail for an unrelated reason
+# and the control proves nothing.
+rm -rf /tmp/unpromoted && mkdir -p /tmp/unpromoted
+sed 's/^\.visible \.global/.global/' kernels/dev_global.ptx > /tmp/unpromoted/dev_global.ptx
+grep -n 'dev_bias\[16\]' /tmp/unpromoted/dev_global.ptx
+./zoxide run /tmp/unpromoted/dev_global.ptx >/tmp/unpromoted.log 2>&1 || true
+# Demand the specific error. Accepting any failure is how the first version of
+# this control reported success while actually failing on an unknown-example
+# check, before it ever reached cuModuleGetGlobal.
+if grep -q '^PASS' /tmp/unpromoted.log; then
+    echo "UNEXPECTED: unpromoted PTX also works — the .visible pass is not needed, delete it"
+elif grep -q 'cannot resolve device global' /tmp/unpromoted.log; then
+    echo "as expected: symbol is not resolvable without .visible — the pass is load-bearing"
+    grep -m1 'cannot resolve device global' /tmp/unpromoted.log
 else
-    echo "as expected, unpromoted fails:"
-    grep -m1 'cannot resolve\|FAIL\|error' /tmp/unpromoted.log || tail -1 /tmp/unpromoted.log
+    echo "INCONCLUSIVE: failed for some other reason, control proves nothing:"
+    cat /tmp/unpromoted.log
 fi
