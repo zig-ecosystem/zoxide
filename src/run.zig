@@ -291,22 +291,56 @@ fn runConstVsLdg(
         .{instr_only_prediction},
     );
 
-    if (uniform_ratio <= 1.02) {
-        try out.print("PASS: const_vs_ldg — no uniform advantage ({d:.2}x); remove the " ++
-            "broadcast claim from the ConstBank docs\n", .{uniform_ratio});
-    } else if (divergent_ratio < instr_only_prediction * 0.75) {
-        // Divergent is far worse than instruction counts can account for, which
-        // is the signature of per-address serialisation in the constant window —
-        // and serialisation only exists because the cache broadcasts.
-        try out.print("PASS: const_vs_ldg — broadcast confirmed: uniform {d:.2}x, " ++
-            "divergent {d:.2}x, well below the {d:.2}x that instruction counts " ++
-            "explain. The constant window serialises per distinct address, so the " ++
-            "uniform win is the cache and not just shorter code.\n", .{ uniform_ratio, divergent_ratio, instr_only_prediction });
+    // Two independent questions. An earlier version of this ran them together
+    // and reported "the uniform win is the cache" off a uniform ratio of 1.02x,
+    // which is no win at all.
+    //
+    // (a) Is `.const` faster than the read-only cache for a uniform read? The
+    //     measurement is a few hundred microseconds, so anything inside 5% is
+    //     not a result.
+    const uniform_wins = uniform_ratio > 1.05;
+    // (b) Does the constant window serialise per distinct address? Instruction
+    //     counts already predict `.const` losing the divergent test; the claim
+    //     needs it to lose by clearly more than that.
+    const serialises = divergent_ratio < instr_only_prediction * 0.75;
+
+    try out.print("  (a) uniform advantage: {s}\n  (b) serialises when divergent: {s}\n", .{
+        if (uniform_wins) "yes" else "no, within noise",
+        if (serialises) "yes" else "no",
+    });
+
+    if (serialises and !uniform_wins) {
+        // What H20 actually reports. Both halves matter and they point the same
+        // way: pick `.const` for semantics, not for speed, and keep uniform.
+        try out.print(
+            "PASS: const_vs_ldg — the constant window serialises ({d:.2}x divergent, " ++
+                "against {d:.2}x from instruction counts alone), but it is no faster " ++
+                "than ld.global.nc when uniform ({d:.2}x). So ConstBank buys CUDA " ++
+                "__constant__ semantics and parameter space, not throughput — and it " ++
+                "costs {d:.1}x if access ever diverges. The broadcast-is-faster claim " ++
+                "must come out of the docs; the divergence warning must go in.\n",
+            .{ divergent_ratio, instr_only_prediction, uniform_ratio, 1.0 / divergent_ratio },
+        );
+    } else if (serialises and uniform_wins) {
+        try out.print(
+            "PASS: const_vs_ldg — broadcast confirmed: {d:.2}x uniform and {d:.2}x " ++
+                "divergent, the latter well below the {d:.2}x instruction counts " ++
+                "explain. Worth it for uniform reads, {d:.1}x penalty if divergent.\n",
+            .{ uniform_ratio, divergent_ratio, instr_only_prediction, 1.0 / divergent_ratio },
+        );
+    } else if (uniform_wins) {
+        try out.print(
+            "PASS: const_vs_ldg — {d:.2}x uniform, but divergent {d:.2}x is close to " ++
+                "the {d:.2}x instruction counts predict, so the gain is shorter code " ++
+                "rather than the cache.\n",
+            .{ uniform_ratio, divergent_ratio, instr_only_prediction },
+        );
     } else {
-        try out.print("PASS: const_vs_ldg — uniform {d:.2}x, but divergent {d:.2}x is " ++
-            "close to the {d:.2}x that instruction counts alone predict. The " ++
-            "advantage is shorter code, not broadcast; the ConstBank docs should " ++
-            "say so.\n", .{ uniform_ratio, divergent_ratio, instr_only_prediction });
+        try out.print(
+            "PASS: const_vs_ldg — no advantage either way ({d:.2}x uniform, {d:.2}x " ++
+                "divergent vs {d:.2}x predicted). ConstBank is semantics only.\n",
+            .{ uniform_ratio, divergent_ratio, instr_only_prediction },
+        );
     }
     return 0;
 }

@@ -264,11 +264,24 @@ fn decimal(comptime n: usize) []const u8 {
 /// with `ld.const`. The host writes it by name through
 /// `Module.global`/`copyHtoD`, exactly as with a device global.
 ///
-/// What this buys over `ldg` on a device global: `.const` is a separate 64 KB
-/// window with a broadcast-optimised cache, so a warp reading one address is a
-/// single fetch. Worth it for small tables every thread reads together
-/// (convolution weights, quantisation scales, hyperparameters); pointless for
-/// large or thread-divergent data, where `ldg` is the right tool.
+/// What this buys over `ldg` on a device global, measured on H20 rather than
+/// taken from the CUDA documentation (`const_vs_ldg`, 64-entry table, 64 sweeps,
+/// identical hand-unrolled shape):
+///
+///     warp-uniform index    0.251 ms vs 0.257 ms  ->  1.02x, i.e. nothing
+///     divergent index       0.906 ms vs 0.273 ms  ->  0.30x, 3.3x slower
+///
+/// So: **not a throughput win**. The read-only data cache already serves uniform
+/// reads about as well, and the widely repeated "broadcast cache makes constant
+/// memory faster" did not survive the measurement here. What the numbers do
+/// confirm is the other half of that story — the constant window serialises per
+/// distinct address within a warp, badly enough (0.30x against the 0.79x that
+/// instruction counts alone predict) that divergence is a real hazard.
+///
+/// Reach for this when the semantics are what matters: matching CUDA's
+/// `__constant__` layout, or keeping a table out of the parameter list so it does
+/// not have to be passed on every launch. Use `ldg` on a device global when the
+/// goal is speed, and never put thread-divergent data in a bank.
 ///
 /// Usage — the declaration has to sit in a comptime block at file scope, because
 /// that is where module-scope assembly belongs:

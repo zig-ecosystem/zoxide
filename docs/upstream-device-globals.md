@@ -68,7 +68,10 @@ const cbuf: [4]f32 addrspace(.constant) = .{ 1, 2, 3, 4 };
 ```
 
 生成 `.global .align 4 .b8 __anon_815` + `ld.global.nc.b32`。是只读缓存
-(等价 `__ldg`),不是 `.const` 的 64KB 广播通路。
+(等价 `__ldg`),不是 `.const` 的 64KB 窗口。
+
+顺带一提:`.const` 在 H20 上**并不更快**。实测 uniform 读 1.02x(噪声量级)、
+发散读 0.30x(慢 3.3×)。选它是为了 `__constant__` 语义和省参数位,不是为了吞吐。
 
 期望:`addrspace(.constant)` 的可变全局变量在 nvptx 上映射到 PTX `.const`
 存储体,并以 external linkage 发出,使 `cuModuleGetGlobal` 可解析。

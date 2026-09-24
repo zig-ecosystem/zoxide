@@ -1,9 +1,13 @@
 //! CUDA constant memory: the PTX `.const` state space, written by the host.
 //!
-//! Distinct from `dev_global.zig`, which uses ordinary global memory read
-//! through the read-only data cache. This one is the real constant bank — a
-//! separate 64 KB window whose cache broadcasts, so a warp reading a single
-//! address is one fetch rather than a coalesced load.
+//! Distinct from `dev_global.zig`, which uses ordinary global memory read through
+//! the read-only data cache. This one is the real constant bank: a separate 64 KB
+//! window with its own addressing.
+//!
+//! Not a faster one, though — `const_vs_ldg` measured 1.02x against
+//! `ld.global.nc` for a warp-uniform read on H20, and 0.30x when the index
+//! diverges. Use a bank for `__constant__` semantics and to keep tables out of
+//! the parameter list, not for throughput.
 //!
 //! Zig cannot declare it. `var x addrspace(.constant)` is rejected outright, and
 //! the immutable form silently lands in `.global` with `ld.global.nc`, which is
