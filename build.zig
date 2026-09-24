@@ -184,6 +184,7 @@ pub fn build(b: *std.Build) void {
         .{ .name = "f16_native" },
         .{ .name = "dev_global" },
         .{ .name = "const_bank" },
+        .{ .name = "const_vs_ldg" },
     };
 
     // `zig build kernels`: compile every kernel in src/examples/ to

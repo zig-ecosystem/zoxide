@@ -144,8 +144,17 @@ f16/f16x2/bf16/bf16x2 wrapper 仍有价值——它们覆盖 `ftz`/`nan`/`xorsig
   ——example 里放了 `pad_before[64]` 把 table 推离起点，让寻址错误暴露成错值而不是通过
 - [x] 符号名**不经 mangling**（asm 逐字透传），host 查 `const_scales` 而非
   `const_bank_$_const_scales`
-- [ ] 待 GPU 验证（`constmem-20260924`）：ptxas 是否接受 asm 发出的 `.const` 声明、
-  `cuModuleGetGlobal` 能否解析 `.const` 符号、两轮不同表证明每次 launch 重读
+- [x] **H20 实测通过**（`constmem-20260924`）：ptxas 接受 asm 发出的 `.const` 声明，
+  `cuModuleGetGlobal` 解析到 `.const` 符号（256 B），两轮不同表各 4096/4096 精确。
+  `pad_before` 在场，说明寻址是真的相对符号而非碰巧从窗口起点读对
+- [x] `getAt(comptime i)`：编译期下标把偏移折进指令，`ld.const.f32 [sym+N]` 一条，
+  而 `get(i)` 的运行时下标需要 mov/cvt/add/ld 四条（偏移是 asm 输入操作数，折不进去）
+- [ ] **待测：`.const` 到底比只读缓存快多少**（`constbench-20260924`）。
+  三处 doc comment 一直在断言「广播缓存所以更快」，那是 CUDA 文档而非本机测量。
+  `const_vs_ldg` 两个 kernel 同表、同访问模式、**手工展开对齐**（交给 LLVM 会得到
+  4× vs 8× 两种展开因子，那测的是展开器不是内存路径）。PTX 级已可见一个事实：
+  `.const` 版语句数反而更少（237 vs 285），因为 `ld.const [sym+N]` 不需要地址运算。
+  三种结果都是真答案——持平或更慢就删掉文档里的断言
 
 ### v1.0.0 — 稳定化
 

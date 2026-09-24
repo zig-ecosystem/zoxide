@@ -31,6 +31,8 @@ const examples = [_]Example{
     .{ .stem = "wgmma_smoke", .entry = "wgmmaSmoke", .default_block = 128 },
     .{ .stem = "dev_global", .entry = "addBias", .default_block = 256 },
     .{ .stem = "const_bank", .entry = "scaleByConst", .default_block = 256 },
+    // Two entries; runConstVsLdg resolves both itself.
+    .{ .stem = "const_vs_ldg", .entry = "constUniform", .default_block = 256 },
 };
 
 fn findExample(path: []const u8) ?Example {
@@ -140,6 +142,8 @@ pub fn run(
         try runDevGlobal(gpa, &ctx, mod, func, out)
     else if (std.mem.eql(u8, ex.stem, "const_bank"))
         try runConstBank(gpa, &ctx, mod, func, out)
+    else if (std.mem.eql(u8, ex.stem, "const_vs_ldg"))
+        try runConstVsLdg(gpa, &ctx, mod, out)
     else
         try runAtomicCounter(gpa, &ctx, func, args, out);
     return r;
@@ -148,6 +152,123 @@ pub fn run(
 fn fail(out: *std.Io.Writer, comptime fmt: []const u8, a: anytype) !u8 {
     try out.print("FAIL: " ++ fmt ++ "\n", a);
     return 1;
+}
+
+/// Measure whether `.const` actually beats the read-only data cache for a
+/// warp-uniform read, rather than asserting it because CUDA documents a
+/// broadcast cache.
+///
+/// Both kernels read the same 64-entry table 64 times with an index uniform
+/// across every thread, hand-unrolled identically so the comparison is not
+/// measuring different unroll factors. Correctness is checked too: a kernel that
+/// reads the wrong table would otherwise be free to be fast.
+fn runConstVsLdg(
+    gpa: std.mem.Allocator,
+    ctx: *cu.Context,
+    mod: cu.Module,
+    out: *std.Io.Writer,
+) !u8 {
+    const bank_len = 64;
+    const trips = 4;
+    const n: usize = 1 << 20;
+    const block: u32 = 256;
+    const grid: u32 = @intCast((n + block - 1) / block);
+
+    const c_sym = "cv_scales";
+    const g_sym = "const_vs_ldg_$_g_scales";
+    const cbank = mod.global(c_sym) catch {
+        try out.print("FAIL: cannot resolve '{s}': {s}\n", .{ c_sym, ctx.drv.lastError() });
+        return 1;
+    };
+    const gbank = mod.global(g_sym) catch {
+        try out.print("FAIL: cannot resolve '{s}': {s}\n", .{ g_sym, ctx.drv.lastError() });
+        return 1;
+    };
+
+    var table: [bank_len]f32 = undefined;
+    for (&table, 0..) |*v, i| v.* = 1.0 + @as(f32, @floatFromInt(i)) * 0.01;
+    try ctx.copyHtoD(cbank.ptr, std.mem.sliceAsBytes(table[0..]));
+    try ctx.copyHtoD(gbank.ptr, std.mem.sliceAsBytes(table[0..]));
+
+    var table_sum: f64 = 0;
+    for (table) |v| table_sum += v;
+
+    const din = try ctx.alloc(n * @sizeOf(f32));
+    defer ctx.free(din);
+    const dout = try ctx.alloc(n * @sizeOf(f32));
+    defer ctx.free(dout);
+    const input = try gpa.alloc(f32, n);
+    defer gpa.free(input);
+    for (input, 0..) |*v, i| v.* = @floatFromInt(i % 13);
+    try ctx.copyHtoD(din, std.mem.sliceAsBytes(input));
+    const host = try gpa.alloc(f32, n);
+    defer gpa.free(host);
+
+    try out.print("bench: warp-uniform table read, {d} entries x {d} trips, n={d}\n", .{ bank_len, trips, n });
+
+    var results: [2]f32 = undefined;
+    const names = [2][:0]const u8{ "const_vs_ldg_$_constUniform", "const_vs_ldg_$_ldgUniform" };
+    const labels = [2][]const u8{ ".const  + ld.const     ", ".global + ld.global.nc " };
+    for (names, labels, 0..) |kname, label, ki| {
+        const func = mod.function(kname) catch {
+            try out.print("FAIL: kernel '{s}' not found: {s}\n", .{ kname, ctx.drv.lastError() });
+            return 1;
+        };
+        var arg_out = dout;
+        var arg_in = din;
+        var arg_n: u32 = @intCast(n);
+        var params = [_]?*anyopaque{ &arg_out, &arg_in, &arg_n };
+
+        // Warm-up, then take the best of several runs: the minimum is the least
+        // contaminated by whatever else the device is doing.
+        try func.launch(grid, 1, 1, block, 1, 1, &params);
+        try ctx.synchronize();
+
+        var best: f32 = std.math.floatMax(f32);
+        for (0..10) |_| {
+            const ev0 = try ctx.eventCreate();
+            defer ev0.destroy();
+            const ev1 = try ctx.eventCreate();
+            defer ev1.destroy();
+            try ev0.record();
+            try func.launch(grid, 1, 1, block, 1, 1, &params);
+            try ev1.record();
+            try ctx.synchronize();
+            const ms = try ev0.elapsedMs(ev1);
+            if (ms < best) best = ms;
+        }
+        results[ki] = best;
+
+        try ctx.copyDtoH(std.mem.sliceAsBytes(host), dout);
+        var bad: usize = 0;
+        var max_rel: f64 = 0;
+        for (host, 0..) |v, i| {
+            const want = @as(f64, input[i]) * table_sum * trips;
+            const rel = if (want == 0) @abs(@as(f64, v)) else @abs(@as(f64, v) - want) / @abs(want);
+            if (rel > max_rel) max_rel = rel;
+            if (rel > 1e-4) bad += 1;
+        }
+        if (bad > 0) {
+            return fail(out, "{s}: {d}/{d} wrong, max rel err {d}", .{ kname, bad, n, max_rel });
+        }
+        try out.print("  {s} {d: >8.3} ms   (max rel err {e})\n", .{ label, best, max_rel });
+    }
+
+    const ratio = results[1] / results[0];
+    try out.print("  .const is {d:.2}x the throughput of ld.global.nc here\n", .{ratio});
+    // Deliberately not a pass/fail threshold: the point is the number, and a
+    // null result is a real finding that should not be reported as a failure.
+    if (ratio > 1.05) {
+        try out.print("PASS: const_vs_ldg — .const measurably faster ({d:.2}x)\n", .{ratio});
+    } else if (ratio < 0.95) {
+        try out.print("PASS: const_vs_ldg — .const measurably SLOWER ({d:.2}x); " ++
+            "ConstBank should not be recommended for this pattern\n", .{ratio});
+    } else {
+        try out.print("PASS: const_vs_ldg — no measurable difference ({d:.2}x); " ++
+            "the read-only cache already handles this, so the broadcast claim " ++
+            "must be removed from the docs\n", .{ratio});
+    }
+    return 0;
 }
 
 /// Verify real CUDA constant memory — PTX `.const`, not read-only global.

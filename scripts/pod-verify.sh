@@ -64,6 +64,7 @@ if [ "$DEGRADED" = 1 ]; then
     if have_ptx wgmma_smoke; then record SKIP "run/wgmma_smoke" "no GPU"; else record SKIP "run/wgmma_smoke" "PTX missing"; fi
     if have_ptx dev_global; then record SKIP "run/dev_global" "no GPU"; else record SKIP "run/dev_global" "PTX missing"; fi
     if have_ptx const_bank; then record SKIP "run/const_bank" "no GPU"; else record SKIP "run/const_bank" "PTX missing"; fi
+    if have_ptx const_vs_ldg; then record SKIP "run/const_vs_ldg" "no GPU"; else record SKIP "run/const_vs_ldg" "PTX missing"; fi
     if have_ptx sgemm_swz; then record SKIP "bench/sgemm_swz" "no GPU"; else record SKIP "bench/sgemm_swz" "PTX missing"; fi
     for k in hgemm_wgmma hgemm_wgmma2 hgemm_wgmma3; do
         if have_ptx "$k"; then record SKIP "bench/$k" "no GPU"; else record SKIP "bench/$k" "PTX missing"; fi
@@ -134,6 +135,21 @@ else
         record PASS "run/const_bank" "$(echo "$out" | grep -m1 '^PASS')"
     else
         record FAIL "run/const_bank" "$(echo "$out" | tail -2 | tr '\n' ' ')"
+    fi
+fi
+
+# 2e. is .const actually faster than the read-only cache for a warp-uniform
+#     read? Measured rather than asserted. A null result is a PASS: it would
+#     mean ConstBank is only worth it for parameter-space or layout reasons, and
+#     the broadcast claim in the docs is wrong.
+if ! have_ptx const_vs_ldg; then
+    record SKIP "run/const_vs_ldg" "PTX missing"
+else
+    out=$("$ZOXIDE" run "$PTXDIR/const_vs_ldg.ptx" 2>&1)
+    if echo "$out" | grep -q '^PASS'; then
+        record PASS "run/const_vs_ldg" "$(echo "$out" | grep -m1 'x the throughput')"
+    else
+        record FAIL "run/const_vs_ldg" "$(echo "$out" | tail -2 | tr '\n' ' ')"
     fi
 fi
 

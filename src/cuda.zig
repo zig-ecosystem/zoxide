@@ -342,6 +342,40 @@ pub fn ConstBank(comptime name: []const u8, comptime T: type, comptime len: usiz
             };
         }
 
+        /// Read element `i` where `i` is known at compile time. Folds the offset
+        /// into the instruction, so this is a single `ld.const` instead of the
+        /// mov/cvt/add/ld that `get` needs — the offset there is an asm input
+        /// operand and cannot be folded into the address.
+        ///
+        /// Worth reaching for in unrolled loops over a small table, which is most
+        /// of what constant memory is for.
+        pub inline fn getAt(comptime i: usize) T {
+            if (i >= len) @compileError("ConstBank index out of range");
+            const at = comptime "[" ++ name ++ "+" ++ decimal(i * @sizeOf(T)) ++ "]";
+            return switch (comptime regClass(T)) {
+                .b16 => @bitCast(asm volatile ("ld.const.b16 %[r], " ++ at ++ ";"
+                    : [r] "=h" (-> u16),
+                    :
+                    : .{})),
+                .f32 => @bitCast(asm volatile ("ld.const.f32 %[r], " ++ at ++ ";"
+                    : [r] "=f" (-> f32),
+                    :
+                    : .{})),
+                .f64 => @bitCast(asm volatile ("ld.const.f64 %[r], " ++ at ++ ";"
+                    : [r] "=d" (-> f64),
+                    :
+                    : .{})),
+                .b32 => @bitCast(asm volatile ("ld.const.b32 %[r], " ++ at ++ ";"
+                    : [r] "=r" (-> u32),
+                    :
+                    : .{})),
+                .b64 => @bitCast(asm volatile ("ld.const.b64 %[r], " ++ at ++ ";"
+                    : [r] "=l" (-> u64),
+                    :
+                    : .{})),
+            };
+        }
+
         /// Address has to be formed relative to the symbol. Feeding a bare byte
         /// offset to `ld.const` reads from the start of the constant window,
         /// which silently happens to work when the bank is the only object in it
