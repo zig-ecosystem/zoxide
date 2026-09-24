@@ -105,6 +105,27 @@ f16/f16x2/bf16/bf16x2 wrapper 仍有价值——它们覆盖 `ftz`/`nan`/`xorsig
   源码里毫无线索）。另把高价值 CUresult 映射为独立错误（ArchMismatch / InvalidPtx /
   LaunchOutOfResources / IllegalAddress / CudaOutOfMemory），因为 `try` 会丢掉 lastError()
 
+### v0.0.13 — 设备全局变量（host 写、device 按名读）
+- [x] 实测确认 Zig 无法表达这个模式，六种写法全部失败：`addrspace(.constant)` 拒绝可变值；
+  不可变 `.constant` 落到 `.global` + `ld.global.nc`（非 `.const` 存储体，且 host 不可写）；
+  无 `export` 的 `.global` 符号无 `.visible`；`export var`(带/不带 addrspace)与 `@export`
+  全部撞 LLVM alias 限制，其中裸 `export var` **直接 abort 编译器**
+- [x] 根因定位：Zig 把变量的 `export` 降成 LLVM alias，NVPTX 只接受 aliasee 是非 kernel 函数的 alias
+- [x] `src/ptx.zig`：PTX 后处理加 `.visible`（只改声明行，访问指令不动），三态结果
+  （promoted / already / missing），missing 直接失败而不是留到 GPU 上才炸
+- [x] `zoxide ptx-export` 子命令 + `zig build kernels` 自动调用（`export_globals`）
+- [x] **第二个更隐蔽的坑**：LLVM 假设模块外无写者，普通读取被常量折叠、符号被丢弃，
+  且**取决于初始值**——`.{10,20,30,40}` 保留，`.{0,0,0,0}`（最自然的占位）折成常量 0 并
+  删除符号，host 上传被静默忽略。`cuda.ldg()`（inline asm `ld.global.nc`，对优化器不透明）
+  解决，顺带拿到只读缓存路径（= CUDA `__ldg`）
+- [x] host 侧：绑定 `cuModuleGetGlobal_v2`，`Module.global()` 把 NOT_FOUND 映射为
+  `GlobalNotFound` 并点出两个长得一样的成因（名字错 / 符号是模块局部的）
+- [x] 构建期工具 `tools/ptx-promote.zig` 编成**宿主原生**——构建图要跑它，
+  跟 `-Dtarget` 走会导致交叉编译 bundle 时产出本机跑不了的二进制（已实测撞到）
+- [ ] **待 GPU 验证**（release tag `devglobal-20260924`）：ptxas 是否认后加的 `.visible`
+  并把符号暴露给 `cuModuleGetGlobal`。「非 visible 符号不进 cubin 符号表」这一步是推理不是实测。
+  `run/dev_global` 用两组不同的表跑两轮，使「符号能解析但忽略 host 写入」也会失败
+
 ### v1.0.0 — 稳定化
 
 - [ ] API 冻结（cuda.zig / driver / gen 的公共接口）
@@ -119,6 +140,8 @@ f16/f16x2/bf16/bf16x2 wrapper 仍有价值——它们覆盖 `ftz`/`nan`/`xorsig
 | ~~Zig asm 无模板替换~~ → 已证伪（`%[name]` 具名替换可用）；遗留：asm 操作数上限（15 出/31 入） | 已解决/残余跟踪 | tcgen05 等超宽指令待替代路线 |
 | `llvm.nvvm.*` 调用是意外暴露能力（ziglang/zig#2291） | 跟踪上游 | zig 升级可能破坏 |
 | zig 0.16 std API 不稳定 | 已钉 0.16.0 | 升级成本 |
+| 设备全局变量的 `.visible` 靠 PTX 后处理，依赖 LLVM 输出形状而非语言保证 | 已缓解，失败显式 | ptxas 是否认这个提升待 GPU 验证；诉求见 `docs/upstream-device-globals.md` |
+| 设备全局变量的普通下标读会被常量折叠、符号消失（**取决于初始值**，全零时静默丢失） | 已缓解（`cuda.ldg()`） | 正确性依赖用户不用普通下标读，非语言级保证 |
 | 单 arch（sm_90）单平台（H20 pod）验证 | 开放 | 泛化性待证 |
 | ncu 不可用（pod 权限） | 已知限制 | 深度调优靠 PTX 审查 + 对照实验 |
 
