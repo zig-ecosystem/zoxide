@@ -63,14 +63,15 @@ pub fn benchMain(
     const hgemm6 = std.mem.eql(u8, stem, "hgemm_wgmma4");
     const hgemm_tma = std.mem.eql(u8, stem, "hgemm_tma");
     const hgemm_bf16 = std.mem.eql(u8, stem, "hgemm_bf16");
+    const imma_s8 = std.mem.eql(u8, stem, "imma_s8");
     const wgmma = hgemm3 or hgemm4 or hgemm5 or hgemm6 or hgemm_tma;
     const hgemm = hgemm1 or hgemm2 or wgmma;
     // Block tile (m, n). hgemm_wgmma uses one warpgroup over a 64x128 tile;
     // the mma.sync kernels use square tiles.
-    const hgemm_tile_m: usize = if (wgmma) 64 else if (hgemm2 or hgemm_bf16) 128 else 64;
+    const hgemm_tile_m: usize = if (wgmma) 64 else if (hgemm2 or hgemm_bf16 or imma_s8) 128 else 64;
     const hgemm_tile_n: usize = if (wgmma) 128 else hgemm_tile_m;
-    if (!tiled and !naive and !reg and !opt and !opt2 and !swz and !hgemm and !hgemm_bf16) {
-        try out.print("error: bench supports sgemm_*, hgemm_mma*, hgemm_wgmma*, hgemm_tma or hgemm_bf16 inputs (got '{s}')\n", .{args.input});
+    if (!tiled and !naive and !reg and !opt and !opt2 and !swz and !hgemm and !hgemm_bf16 and !imma_s8) {
+        try out.print("error: bench supports sgemm_*, hgemm_mma*, hgemm_wgmma*, hgemm_tma, hgemm_bf16 or imma_s8 inputs (got '{s}')\n", .{args.input});
         return 1;
     }
     const regblocked = reg or opt or opt2 or swz;
@@ -81,6 +82,13 @@ pub fn benchMain(
     // hgemm_wgmma tiles N by 128 and has no bounds guard in the epilogue.
     if (wgmma and args.n % 128 != 0) {
         try out.print("error: hgemm_wgmma* requires n % 128 == 0 (got {d})\n", .{args.n});
+        return 1;
+    }
+    // imma_s8 tiles 128x128 with a 32-deep K slice and, like the wgmma kernels,
+    // has no bounds guard in its epilogue — a partial tile writes out of range
+    // rather than producing a wrong number, so this is a hard gate.
+    if (imma_s8 and args.n % 128 != 0) {
+        try out.print("error: imma_s8 requires n % 128 == 0 (got {d})\n", .{args.n});
         return 1;
     }
     const n = args.n;
@@ -121,6 +129,8 @@ pub fn benchMain(
         try std.fmt.allocPrint(gpa, "{s}_$_hgemmTma", .{stem})
     else if (hgemm_bf16)
         try std.fmt.allocPrint(gpa, "{s}_$_hgemmBf16", .{stem})
+    else if (imma_s8)
+        try std.fmt.allocPrint(gpa, "{s}_$_immaS8", .{stem})
     else if (hgemm6)
         try std.fmt.allocPrint(gpa, "{s}_$_hgemmWgmma4", .{stem})
     else if (hgemm5)
@@ -198,6 +208,15 @@ pub fn benchMain(
         reportOccupancy(kern.inner, 128, dev_info, out) catch |e|
             try out.print("kernel: resource/occupancy query failed ({s}): {s}\n", .{ @errorName(e), drv.lastError() });
         return runHgemmBf16(gpa, &ctx, kern, n, args.iters, out, hgemm_tile_m, hgemm_tile_n, dev_info);
+    }
+    if (imma_s8) {
+        const kern = mod.kernel(api.imma_s8, namez) catch |e| {
+            try out.print("error: {s}: {s}\n", .{ @errorName(e), drv.lastError() });
+            return 1;
+        };
+        reportOccupancy(kern.inner, 128, dev_info, out) catch |e|
+            try out.print("kernel: resource/occupancy query failed ({s}): {s}\n", .{ @errorName(e), drv.lastError() });
+        return runImmaS8(gpa, &ctx, kern, n, args.iters, out, hgemm_tile_m, hgemm_tile_n, dev_info);
     }
     if (hgemm) {
         const kern = mod.kernel(api.hgemm, namez) catch |e| {
@@ -521,6 +540,116 @@ fn runHgemmBf16(gpa: std.mem.Allocator, ctx: *gpu.Context, kern: gpu.Kernel(api.
     defer gpa.free(c);
     @memset(c, 0);
     return finishVerify(gpa, ctx, dc, a, b, c, n, out);
+}
+
+/// H20 INT8 tensor peak, 2x the FP16 number from the same spec sheet.
+const h20_int8_peak_gops: f64 = 296000;
+
+/// IMMA s8 variant. Structurally runHgemmBf16, with one difference that is the
+/// whole point of the shape: s8 x s8 -> s32 is exact, so verification is an
+/// equality over the full i8 input range rather than a relative tolerance.
+///
+/// The full range matters. Restricting inputs to a few small values (as the
+/// f16/bf16 benches do, because those need values representable in 16 bits)
+/// would leave sign extension and the little-endian byte packing in the B
+/// fragment gather untested — `-128` and `127` are exactly the operands that
+/// catch a wrong shift or a missing `@bitCast`. Overflow is not a concern: the
+/// worst-case |sum| is n * 127 * 128, which stays inside i32 for any n below
+/// ~132000.
+fn runImmaS8(gpa: std.mem.Allocator, ctx: *gpu.Context, kern: gpu.Kernel(api.imma_s8), n: usize, iters: u32, out: *std.Io.Writer, tile_m: usize, tile_n: usize, dev_info: ?cu.Context.Info) !u8 {
+    const elems = n * n;
+    const ah = try gpa.alloc(i8, elems);
+    defer gpa.free(ah);
+    const bh = try gpa.alloc(i8, elems);
+    defer gpa.free(bh);
+    var rng: u32 = 0x13579bdf;
+    for (ah) |*v| v.* = @bitCast(@as(u8, @truncate(xorshift(&rng))));
+    for (bh) |*v| v.* = @bitCast(@as(u8, @truncate(xorshift(&rng))));
+
+    const da = try ctx.allocSlice(i8, elems);
+    defer ctx.freeSlice(da);
+    const db = try ctx.allocSlice(i8, elems);
+    defer ctx.freeSlice(db);
+    const dc = try ctx.allocSlice(i32, elems);
+    defer ctx.freeSlice(dc);
+    try ctx.upload(da, ah);
+    try ctx.upload(db, bh);
+    // Poisoned rather than zeroed, same reasoning as the bf16 path: 0xff as
+    // i32 is -1, a value the kernel never legitimately leaves behind for this
+    // input, so "wrote nothing" cannot pass.
+    try ctx.fillBytes(dc, 0xff);
+
+    const kargs = .{ da, db, dc, @as(u32, @intCast(n)) };
+    const grid_x: u32 = @intCast((n + tile_n - 1) / tile_n);
+    const grid_y: u32 = @intCast((n + tile_m - 1) / tile_m);
+
+    const start = try ctx.eventCreate();
+    defer start.destroy();
+    const stop = try ctx.eventCreate();
+    defer stop.destroy();
+    var best_ms: f32 = std.math.floatMax(f32);
+    var it: u32 = 0;
+    while (it < iters) : (it += 1) {
+        try start.record();
+        try kern.launch(.{ .x = grid_x, .y = grid_y }, .{ .x = 128 }, kargs);
+        try stop.record();
+        try stop.sync();
+        const ms = try start.elapsedMs(stop);
+        if (ms < best_ms) best_ms = ms;
+    }
+
+    // Two integer ops per MAC, same convention as the float variants, reported
+    // as GOPS because these are not floating-point operations.
+    const ops = 2.0 * @as(f64, @floatFromInt(n)) * @as(f64, @floatFromInt(n)) * @as(f64, @floatFromInt(n));
+    const gops = ops / (@as(f64, best_ms) * 1e6);
+    try out.print("bench: imma_s8(tile={d}x{d}) n={d} iters={d}\n", .{ tile_m, tile_n, n, iters });
+    try out.print("best: {d:.3} ms over {d} iters\n", .{ best_ms, iters });
+    try out.print("GOPS: {d:.1} ({d:.1}% of H20 INT8 tensor peak ~{d:.0} GOPS)\n", .{ gops, gops / h20_int8_peak_gops * 100, h20_int8_peak_gops });
+
+    const blocks = ((n + tile_m - 1) / tile_m) * ((n + tile_n - 1) / tile_n);
+    // 1 byte per element, half the bf16 traffic for the same tiling.
+    const demand_bytes: f64 = @floatFromInt(blocks * (tile_m + tile_n) * n);
+    const gbs = demand_bytes / (@as(f64, best_ms) * 1e-3) / 1e9;
+    try out.print("global reads: {d:.2} GB demand -> {d:.2} TB/s (L2 absorbs repeats; DRAM is lower)\n", .{ demand_bytes / 1e9, gbs / 1000 });
+    if (dev_info) |di| {
+        const operands_bytes: f64 = @floatFromInt(2 * n * n);
+        const l2: f64 = @floatFromInt(di.l2_bytes);
+        try out.print("A+B working set: {d:.0} MB vs {d:.0} MB L2 — {s}\n", .{
+            operands_bytes / (1 << 20),
+            l2 / (1 << 20),
+            if (operands_bytes <= l2) "fits, so repeat reads stay on chip" else "exceeds L2, repeat reads reach DRAM",
+        });
+    }
+
+    const c = try gpa.alloc(i32, elems);
+    defer gpa.free(c);
+    try ctx.download(c, dc);
+    var bad: usize = 0;
+    var first_bad: struct { row: usize, col: usize, want: i64, got: i32 } = undefined;
+    var vrng: u32 = 0xdeadbeef;
+    var si: usize = 0;
+    while (si < 256) : (si += 1) {
+        const idx = xorshift(&vrng) % elems;
+        const row: usize = idx / n;
+        const col: usize = idx % n;
+        var want: i64 = 0;
+        var k: usize = 0;
+        while (k < n) : (k += 1) {
+            want += @as(i64, ah[row * n + k]) * @as(i64, bh[k * n + col]);
+        }
+        if (want != c[idx]) {
+            if (bad == 0) first_bad = .{ .row = row, .col = col, .want = want, .got = c[idx] };
+            bad += 1;
+        }
+    }
+    if (bad > 0) {
+        try out.print("FAIL: {d}/256 samples wrong; first at ({d},{d}) want {d} got {d}\n", .{
+            bad, first_bad.row, first_bad.col, first_bad.want, first_bad.got,
+        });
+        return 1;
+    }
+    try out.print("PASS: 256/256 samples exact (integer MMA, no tolerance)\n", .{});
+    return 0;
 }
 
 /// TMA variant of runHgemm (S2): same data, timing loop and verification as

@@ -59,7 +59,13 @@
     - prefetch 6 条(1d_l2、5d_l2、gather4_2d_l2、2d/3d/4d 的 cache_hint):fire-and-forget,无 mbarrier 依赖,是 13 条里成本最低的一批;NVVM 已暴露部分非 cache_hint 形式(2d/4d_l2 已生成),补法 = 生成器补 cache_hint 维度或手写 6 条 asm。
   - 同次普查的附带订正:packed_atomic 缺 2 条是**误报**(`packed_atomic_add_{f16x2,bf16x2}` 已生成为 `atom_add_{f16x2,bf16x2}`,fn 名 ≠ catalog id);`wgmma_wait_group` 缺 1 条同理(手写在 `src/wgmma.zig`);sparse_mma 缺 4 条为 fp8(e4m3/e5m2)m16n8k64 非 ordered_metadata 形,归 P2 sparse mma 条目;sreg 12 条为无 probe 的原始寄存器读,常用项已手写在 cuda.zig。
 - [ ] **mma 形状扩展**:bf16、int8/int4、fp8/f6/f4 的 mma.sync 形状。依赖 P1b(ldmatrix)与 P1d(packed/cvt)。每个形状 = 一个 bench 变体进 hgemm 家族,沿用现有"精确结果 + 峰值占比"口径。
-  - 进展(2026-09-29):**bf16 形状完成(PTX 级)**——`hgemm_bf16`(hgemm_mma2 同构,mma.sync m16n8k16 bf16,Zig 无 bf16 类型故以 u16 位模式传输),bench 变体 + CI PTX grep 断言已就位;真机计时/正确性验证挂起至 GPU 环境。int8/fp8 等其余形状未动。
+  - 进展(2026-09-29):**bf16 形状完成(PTX 级)**——`hgemm_bf16`(hgemm_mma2 同构,mma.sync m16n8k16 bf16,Zig 无 bf16 类型故以 u16 位模式传输),bench 变体 + CI PTX grep 断言已就位;真机计时/正确性验证挂起至 GPU 环境。
+  - 进展(2026-09-29):**int8 形状完成(PTX 级)**——`imma_s8`,`mma.sync.aligned.m16n8k32.row.col.s32.s8.s8.s32`,i8 输入 / i32 累加器,128x128 tile + k_slice 32,复用 hgemm_bf16 的 cp.async 双缓冲与 ldmatrix.x4 A 路径。
+    - **架构门是 sm_80,不是 sm_75**(catalog 谓词:`getSmVersion() >= 80` + `getPTXVersion() >= 70`)。sm_75 只支持 `m8n8k16` 那个小形状(A 1 reg / B 1 reg / C 2 reg)。建计划时记的 sm_75 口径是错的,已订正。
+    - **B fragment 无法走 ldmatrix**,这是指令层面的固有不匹配而非疏漏:s8 的 B 寄存器要的是"同一列、k 方向 4 个连续字节",而 ldmatrix 每 lane 只发 4 个**内存连续**字节,`.trans` 换的是哪个轴连续,仍只给每个 8x8 矩阵 2 个 k 行。CUTLASS 靠 store 时把 B 置换成 crosswise 布局绕开,而 cp.async 的 16B chunk 只能搬全局连续字节,这条路在此不可用。因此 B 以 128 条 `ld.shared.b8` 手工打包——**先正确,置换优化列为后续**。代价在 PTX 里可见(无 `ldmatrix.*.trans`),预期吞吐显著低于 int8 峰值,CI 已把"无 trans"和"128 条 b8"一起断言,将来任一侧改动会强制同时复核。
+    - 验证:`zig build kernels` 产出 64 条目标 mma、8 条 ldmatrix.x4、128 条 ld.shared.b8、2 条 bar.sync、无 `$N`/`%[` 残留、无 `__local_depot`(即无显式 spill),CI 断言已加。bench 变体 `runImmaS8` 走**精确整数相等**校验(s8×s8→s32 无舍入),输入取满 i8 范围以覆盖符号扩展与小端打包;峰值口径 H20 INT8 296 TOPS(与仓库既有 148/44 同一份规格表)。
+    - **未验证项**:本机无 CUDA 工具链,`ptxas` 不可用,故寄存器分配/spill 与 occupancy 未经检查(`.reg %r<2351>` 是虚拟寄存器数,不代表实际压力);真机计时与 PASS 同 bf16 一并挂起至 GPU 环境。
+  - fp8 形状:`mma.sync m16n8k16` 的 fp8 变体 catalog 已有 8 条(e4m3/e5m2 × f16/f32 累加),但 **sm_90 上的可用性有架构疑问**,留后处理,不与 int8 合并推进。int4/f6/f4 未动。
 - [ ] **sparse mma**:catalog 有条目,等 P2 mma 基建成熟后按同一模式生成。
 - [ ] **tcgen05(Blackwell)**:仅当拿到 sm_100 真机才排期。`.reg` 绕法已验证可行,但 spill 代价数据(wgmma4 首跑会产出)决定这条路值不值得走。当前标注 blocked-on-hardware。
 

@@ -26,6 +26,12 @@ pub const hgemm = fn (a: [*]const f16, b: [*]const f16, c: [*]f32, n: u32) void;
 /// are u16 bit patterns; f32 accumulation, same as the f16 family.
 pub const hgemm_bf16 = fn (a: [*]const u16, b: [*]const u16, c: [*]f32, n: u32) void;
 
+/// `imma_s8`: the int8 tensor-core shape, `mma.sync.m16n8k32.s32.s8.s8.s32`.
+/// Unlike the f16/bf16 family this one is integer end to end — `i8` inputs and
+/// `i32` accumulators — so the result is exact and the correctness check is an
+/// equality, not a tolerance.
+pub const imma_s8 = fn (a: [*]const i8, b: [*]const i8, c: [*]i32, n: u32) void;
+
 /// Shape of the `const_vs_ldg` comparison, shared because the harness computes
 /// the expected result from it.
 ///

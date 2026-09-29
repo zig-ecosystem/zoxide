@@ -113,6 +113,23 @@ jobs:
           grep -q 'cp\.async\.wait_group' hgemm_bf16.ptx
           if grep -qE '\$[0-9]|%\[' hgemm_bf16.ptx; then echo "hgemm_bf16: unsubstituted operand"; exit 1; fi
           test "$(grep -c 'bar\.sync' hgemm_bf16.ptx)" -eq 2
+          # imma_s8: int8 mma shape, s8 inputs and s32 accumulators. Same tiling
+          # and cp.async pipeline as hgemm_bf16, so the counts match; the
+          # difference is the B path, which has no ldmatrix (see the kernel doc
+          # comment) and gathers bytes instead.
+          test "$(grep -c 'mma\.sync\.aligned\.m16n8k32\.row\.col\.s32\.s8\.s8\.s32' imma_s8.ptx)" -eq 64
+          grep -q 'ldmatrix\.sync\.aligned\.m8n8\.x4' imma_s8.ptx
+          # Asserted absent, not merely unasserted: if a future change makes B
+          # loadable through ldmatrix.trans, this line is what forces the kernel
+          # comment and the 128 scalar loads below to be revisited together.
+          if grep -q 'ldmatrix\.[a-z0-9.]*trans' imma_s8.ptx; then echo "imma_s8: B now uses ldmatrix.trans; update the doc comment and the ld.shared.b8 count"; exit 1; fi
+          test "$(grep -c 'ld\.shared\.b8' imma_s8.ptx)" -eq 128
+          grep -q 'cp\.async\.cg\.shared\.global' imma_s8.ptx
+          grep -q 'cp\.async\.wait_group' imma_s8.ptx
+          if grep -qE '\$[0-9]|%\[' imma_s8.ptx; then echo "imma_s8: unsubstituted operand"; exit 1; fi
+          test "$(grep -c 'bar\.sync' imma_s8.ptx)" -eq 2
+          # The s8 shape needs sm_80; the default kernel target is sm_90.
+          grep -q '\.target sm_9' imma_s8.ptx
           # wgmma kernels: sm_90a target, RS vs SS operand forms, pipeline depth.
           for f in wgmma_smoke hgemm_wgmma hgemm_wgmma2 hgemm_wgmma3; do
             grep -q '\.target sm_90a' "$f.ptx" || { echo "$f: not built for sm_90a"; exit 1; }
