@@ -1,8 +1,29 @@
 # zoxide roadmap
 
-> 2026-09-20 起生效。版本节奏：探索性迭代用 alpha，阶段性成果用 beta，稳定版不带后缀。
-> 每次发版在 `docs/announcement.md` 追加公告 + 配图。
+> 2026-09-20 起生效，2026-09-29 校订。版本节奏：探索性迭代用 alpha，阶段性成果用 beta，
+> 稳定版不带后缀。每次发版在 `docs/announcement.md` 追加公告 + 配图。
 > 历史与详细能力对照见 `docs/PORTING.md`；真机证据见 `docs/verification/`。
+
+## 这份文档管什么，不管什么
+
+仓库里有**两套并行的计划编号**，各自负责不同的问题，之前没有交叉引用，读者容易以为其中
+一份就是全貌。分工是：
+
+| 文档 | 回答的问题 | 编号方式 |
+|---|---|---|
+| **本文** | 「发过什么、每个版本的结论和残留项是什么」 | 版本号 v0.0.x |
+| `docs/cuda-oxide-port-plan.md` | 「接下来按什么顺序补什么、怎么算做完」 | 优先级 P0–P3 |
+| `docs/tma-plan.md` | TMA 专项的可否证判据 | 假设 H1–H3 |
+| `docs/upstream-asm-output-limit.md` | asm 操作数上限的上游诉求 | — |
+
+**当前正在执行的是 port-plan 的 P0–P3，不是本文的版本序列。** 两者的对应关系：
+
+- P0（在途收尾）= TMA S0 真机验证 + `hgemm_wgmma4` 真机跑 —— 都还没做，且都**只差一次 GPU 环境**
+- P1（intrinsics 广度 + 数学库）= 已完成，见下方「已完成但未发版」
+- P2（TMA 补全 + 加速器面）= 进行中，mma 形状扩展做到 int8
+- P3（工程化）= 对应本文 v1.0.0 之前的工程化项
+
+新增能力请先改 port-plan，本文在发版时回填。
 
 ## 已完成
 
@@ -19,8 +40,28 @@
 | v0.0.10-alpha | Host API：类型化 launch、stream、pinned、设备侧 memset、occupancy 查询 |
 | v0.0.11-alpha | `zoxide new` 脚手架；hgemm 签名改 f16；host API 真机验证全通 |
 | v0.0.12-alpha | 订正 v0.0.8 归因（1 字节溢出值 7.3% 吞吐，三级流水值 0）；bench 改用类型化 API；GPU CI job |
+| v0.0.13-alpha | 设备全局变量（host 写、device 按名读）：`cuda.ldg()` 绕开常量折叠，H20 实测 1024/1024 精确；两次反向对照，其中一次否掉了自己加的 PTX 后处理 |
+| v0.0.14-alpha | 真正的 constant memory（`.const` 存储体，模块级 inline asm 发声明）：H20 实测 4096/4096 精确，并**证伪**「广播缓存所以更快」——uniform 持平（1.02x），发散慢 3.3× |
 
-## 规划
+## 已完成但未发版（2026-09-25 → 09-29）
+
+这批工作按 port-plan 的 P1/P2 推进，尚未归入版本号。详细完成定义与逐条结论在
+`docs/cuda-oxide-port-plan.md`，此处只记结论。
+
+| 工作 | 结论 | 证据层级 |
+|---|---|---|
+| **P1 intrinsics 广度**（ldmatrix/stmatrix、warp 级、packed、原子扩展、libdevice） | 五个 family 全部落地 + smoke kernel + CI PTX grep 断言 | PTX 级（无 GPU 门） |
+| **catalog 覆盖率普查订正** | 按 `id` 匹配实为 **943/1025（92%）**，缺失 82；原先的 947/163 是按函数名计数的产物 | 可复算 |
+| **TMA S1 bisect** | 三轮 bisect（`tma-s1c/s1d/tma-bisect` tag）定位到 mbarrier 等待时序；修了一个 asm 寄存器别名 bug | 代码级 |
+| **bf16 mma 形状** | `hgemm_bf16`，`mma.sync m16n8k16 bf16`，bench 变体 + CI 断言 | PTX 级 |
+| **int8 mma 形状** | `imma_s8`，`mma.sync m16n8k32 s32.s8.s8.s32`，精确整数校验；订正了「sm_75 即支持」（实为 **sm_80**）；确认 B fragment 无法走 ldmatrix 是指令层面固有不匹配 | PTX 级 |
+
+**这批全部是 PTX 级验证，无一条有真机数字**——本机无 CUDA 工具链，`ptxas` 都没跑过，
+所以寄存器分配/溢出/occupancy 一律未检。真机门统一挂在 P0 的 GPU 环境上。
+
+## 已发版本的详细记录与残留项
+
+以下按版本号升序。已发版本保留当时的判据与结论（包括被后续实验推翻的），未勾选项即残留待办。
 
 ### v0.0.3 — 验证基建与开发体验（alpha → beta）
 
@@ -35,12 +76,33 @@
 
 ### v0.0.4 — asm 类 intrinsics 生成（已解锁，M4d）
 
-**前提修正（v0.0.3-alpha）**：Zig asm 支持 `%[name]` 具名操作数替换——之前只试了 `$0`/`%0`/`${0}`/`$[name]` 四种不支持的形式。生成器已升级：`zoxide gen` 把 probe 里的 LLVM 位置模板（`$N`）重写为具名操作数，asm 类条目从"689 条不可映射"变为 **618 条已生成**（`src/gen/instrinsics_asm.zig`），含 mma.sync 多输出形式；剩余 163 条未映射的主因是 zig asm 操作数上限（输出 ≤15、输入 ≤31，AstGen 硬性限制）挡住 tcgen05.ld 等超宽指令。
+**前提修正（v0.0.3-alpha）**：Zig asm 支持 `%[name]` 具名操作数替换——之前只试了 `$0`/`%0`/`${0}`/`$[name]` 四种不支持的形式。生成器已升级：`zoxide gen` 把 probe 里的 LLVM 位置模板（`$N`）重写为具名操作数，asm 类条目从"689 条不可映射"变为 **618 条已生成**（`src/gen/instrinsics_asm.zig`），含 mma.sync 多输出形式。
+
+> **订正（2026-09-25 普查）**：本节原写"剩余 163 条未映射"，那是按函数名计数的产物。
+> 按 catalog `id` 匹配，真实覆盖是 **943/1025**，缺失 **82 条**。其中只有 71 条
+> （tcgen05）确实受 asm 操作数上限阻塞；另 11 条另有原因（LLVM 无 g2s intrinsic 7、
+> 生成器未覆盖 prefetch cache_hint 3、`wgmma_wait_group` 仅手写未生成 1）。
 
 - [x] 模板转换器（$N → %[name]，约束 r/l/f/d/h/n 映射，immarg 用 comptime "n" 约束）
 - [x] 多输出 asm（≤15 个输出，struct 返回）与 smoke kernel（asm_smoke.ptx 含 abs.bf16x2/mul.rn.f32x2/mma.sync）
 - [x] **真机验证**：fp16 mma kernel 在 H20 上跑通，结果精确（hgemm_mma 36.8 TF → hgemm_mma2 53.8 TF → hgemm_wgmma 80.3 TF / 54.3% FP16 峰值）
-- [ ] tcgen05 等超宽指令（>15 输出）的替代路线——**已确认 15 输出上限也卡住 wgmma 宽 N 形态**（`m64n32k16` 需 16 个累加器寄存器，正好超 1 个），且无法靠拆调用绕开：一条 wgmma 的累加器必须在同一操作数列表。上游补丁建议（`>= 16` → `> 32`，ZIR 侧无需改动）见 `docs/upstream-asm-output-limit.md`
+- [x] tcgen05 等超宽指令（>15 输出）的替代路线——**`.reg` 绕法已验证可行**：在 asm 里自行声明
+  `.reg`，累加器不作为操作数出现，上限不适用（`hgemm_wgmma4` 用它跑 `m64n128k16`）。
+  所以上限是刺而不是墙。代价是 LLVM 看不见这些寄存器、无法核算分配，CI 必须断言
+  `st.local` 不出现。上游补丁建议（`>= 16` → `> 32`，ZIR 侧无需改动，因为
+  `outputs_len` 已是 `u7`）见 `docs/upstream-asm-output-limit.md`
+- [ ] tcgen05 本身仍待排期：82 条缺失里 71 条是它，但绕法的溢出代价未测，且需 Blackwell
+  真机，归 P2 的 blocked-on-hardware
+
+### v0.0.5 — 类型化启动与单文件体验
+
+- [ ] `@embedFile` cubin + comptime 生成类型化 launch（对标 cuda-oxide `#[cuda_module]`）：kernel 参数在编译期检查类型/数量
+- [x] host+device 同包的标准项目模板（`zoxide new`）—— 生成的包与 `tests/downstream` 同构，
+  fingerprint 从编译器的错误消息取回；CI 断言生成物的 PTX 入口点 == host 查找的符号
+- [x] launch 参数校验（block/grid vs device 限制）—— 启动前用缓存的设备限制做纯算术校验，
+  消息点明维度与上限；最有价值的一条是「设备允许但本 kernel 不允许」（寄存器压低了上限，
+  源码里毫无线索）。另把高价值 CUresult 映射为独立错误（ArchMismatch / InvalidPtx /
+  LaunchOutOfResources / IllegalAddress / CudaOutOfMemory），因为 `try` 会丢掉 lastError()
 
 ### v0.0.8 — wgmma 流水深化 ✅
 - [x] 三级缓冲 + `wait_group 1`：wgmma 与下一段 cp.async 重叠，58.3% 峰值（+4.0pp）
@@ -90,20 +152,21 @@ f16/f16x2/bf16/bf16x2 wrapper 仍有价值——它们覆盖 `ftz`/`nan`/`xorsig
   的断言：RS 形态累加器仍是 8 个，落在 15 输出限制内，而操作数流量已与 n128 持平（42.7 flops/byte）
 - [x] **`--maxrregcount` 扫描** —— occupancy 不是约束：零溢出下 5 blocks/31% 比 4 blocks/25% 慢 3%。
   寄存器维度关闭（98 regs / 4 blocks 即最优）。顺带量化了溢出代价：16 个寄存器溢出 = 0.55x 吞吐
-- [ ] **打补丁的 zig（output 上限 32）编 `m64n64k16`** —— 四条排除现已全部有实测支撑，
-  n16 单指令效率是唯一剩下的候选，而测它必须把 N 变宽。按你的要求，这条留到最后再谈
-- [ ] 上游提交（ziglang/zig issue 创建受限于 collaborator，走 `docs/drafts/` 里记录的 fallback 渠道）
-- [ ] TMA 替代 cp.async（与 n16 无关的独立方向）
-
-### v0.0.5 — 类型化启动与单文件体验
-
-- [ ] `@embedFile` cubin + comptime 生成类型化 launch（对标 cuda-oxide `#[cuda_module]`）：kernel 参数在编译期检查类型/数量
-- [x] host+device 同包的标准项目模板（`zoxide new`）—— 生成的包与 `tests/downstream` 同构，
-  fingerprint 从编译器的错误消息取回；CI 断言生成物的 PTX 入口点 == host 查找的符号
-- [x] launch 参数校验（block/grid vs device 限制）—— 启动前用缓存的设备限制做纯算术校验，
-  消息点明维度与上限；最有价值的一条是「设备允许但本 kernel 不允许」（寄存器压低了上限，
-  源码里毫无线索）。另把高价值 CUresult 映射为独立错误（ArchMismatch / InvalidPtx /
-  LaunchOutOfResources / IllegalAddress / CudaOutOfMemory），因为 `try` 会丢掉 lastError()
+- [x] ~~打补丁的 zig（output 上限 32）编 `m64n64k16`~~ —— **不需要补丁**。`.reg` 绕法让
+  宽 N 在原版 Zig 上可表达，`hgemm_wgmma4`（`m64n128k16`）已实现并通过 PTX 断言。
+  于是"测 n16 单指令效率"这件事与上游解耦了
+- [ ] **跑 `hgemm_wgmma4` vs `hgemm_wgmma3`** —— 这是 n16 单指令效率的判据，也是唯一
+  还没兑现的那一环。代码已在、CI 已断言、**真机没跑过**（`docs/verification/` 无条目），
+  是 port-plan 的 P0
+- [ ] 上游提交 asm 上限诉求 —— **渠道信息已变更（2026-09-29）**：Zig 的 issue 追踪已迁至
+  Codeberg（`codeberg.org/ziglang/zig`，issue 重新编号，迁移条目正文带
+  `Migrated from: github.com/...`）。`docs/drafts/` 里"GitHub issue 创建受限于
+  collaborator"那条已过期，提交前重新确认 Codeberg 权限。
+  附带结论：两个追踪器都搜过，**这个上限从无任何 issue/PR/讨论**，langref 也没记载，
+  所以没有既有共识需要挑战——详见 `docs/upstream-asm-output-limit.md`
+- [x] ~~TMA 替代 cp.async~~ —— **结论已出且为否**。`docs/tma-plan.md` 的 H1 不成立：
+  TMA 对 hgemm 吞吐的动机被数据否定（S2）。P2 里 TMA 项的动机只剩"能力完整性"，
+  优先级已下调，s2g/multicast 无外部需求则继续挂起
 
 ### v0.0.13 — 设备全局变量（host 写、device 按名读）
 - [x] 实测确认 Zig 无法表达这个模式，六种写法全部失败：`addrspace(.constant)` 拒绝可变值；
@@ -194,16 +257,26 @@ f16/f16x2/bf16/bf16x2 wrapper 仍有价值——它们覆盖 `ftz`/`nan`/`xorsig
 
 | 项 | 状态 | 影响 |
 |---|---|---|
-| ~~Zig asm 无模板替换~~ → 已证伪（`%[name]` 具名替换可用）；遗留：asm 操作数上限（15 出/31 入） | 已解决/残余跟踪 | tcgen05 等超宽指令待替代路线 |
+| ~~Zig asm 无模板替换~~ → 已证伪（`%[name]` 具名替换可用） | 已解决 | — |
+| asm 操作数上限（15 出 / 31 入）—— 能力不受阻（`.reg` 绕法），但绕法让 LLVM 无法核算寄存器分配 | 已缓解，代价已知 | 溢出 = 0.55x 吞吐且无报错，只能靠 CI 断言 `st.local` 不出现；上游诉求见 `docs/upstream-asm-output-limit.md` |
 | `llvm.nvvm.*` 调用是意外暴露能力（ziglang/zig#2291） | 跟踪上游 | zig 升级可能破坏 |
 | zig 0.16 std API 不稳定 | 已钉 0.16.0 | 升级成本 |
-| 设备全局变量的 `.visible` 靠 PTX 后处理，依赖 LLVM 输出形状而非语言保证 | 已缓解，失败显式 | ptxas 是否认这个提升待 GPU 验证；诉求见 `docs/upstream-device-globals.md` |
 | 设备全局变量的普通下标读会被常量折叠、符号消失（**取决于初始值**，全零时静默丢失） | 已缓解（`cuda.ldg()`） | 正确性依赖用户不用普通下标读，非语言级保证 |
 | 单 arch（sm_90）单平台（H20 pod）验证 | 开放 | 泛化性待证 |
+| **近一周的能力（P1 广度、bf16/int8 mma）全部只有 PTX 级验证** | 开放 | 本机无 CUDA 工具链，`ptxas` 未运行；寄存器分配/溢出/occupancy 全未检，语义正确性靠真机才能证 |
 | ncu 不可用（pod 权限） | 已知限制 | 深度调优靠 PTX 审查 + 对照实验 |
+
+> **已移除的一行（2026-09-29）**：原风险表有「设备全局变量的 `.visible` 靠 PTX 后处理，
+> 依赖 LLVM 输出形状而非语言保证；ptxas 是否认这个提升待 GPU 验证」。这一整行作废——
+> v0.0.13 的反向对照（`devglobal-neg2-20260924`）证明 ptxas 本来就把 module-scope
+> `.global` 暴露给 `cuModuleGetGlobal`，那套后处理（`src/ptx.zig`、`zoxide ptx-export`、
+> `tools/ptx-promote.zig`）已全部删除，且 H20 实测已通过。风险表比它所描述的代码晚了两个版本。
 
 ## 决策记录
 
 - 2026-09-17：走"Zig 实现"路线（非代码移植）；arch 基线 sm_90
 - 2026-09-18：版本号 alpha/beta 节奏；host 绑定手写 extern（非 @cImport）
 - 2026-09-20：pod 上 `zoxide run` 用 gnu 动态构建（musl 静态 dlopen 不可靠）；发版必配 announcement.md 条目 + 图片
+- 2026-09-24：新增能力的排期改由 `docs/cuda-oxide-port-plan.md`（P0–P3）驱动，本文退为发版记录
+- 2026-09-29：口径统一为「按 catalog `id` 匹配」计覆盖率；公告里的历史数字保留原文 + 加订正框，不改写
+- 2026-09-29：上游追踪器认 Codeberg（`codeberg.org/ziglang/zig`），GitHub 仓库视为迁移前存档

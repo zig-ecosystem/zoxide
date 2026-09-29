@@ -150,6 +150,14 @@ wgmma 和 mma.sync 有两处本质不同。一是 **LLVM 没有 `wgmma.mma_async
 
 代价要说清楚：**54.3% 是带着 Zig 15 输出上限跑出来的**。`m64nNk16` 每线程需要 N/2 个累加器寄存器且每个都得是 asm output，`m64n32k16`（16 个）正好超 1 个，所以只能用 `m64n16k16` 铺 8 次覆盖 N=128，A tile 每段重读 8 遍。上限是 ZIR 编码的历史遗留（`outputs_len` 已是 u7），放到 32 就能用 `m64n64k16`——见 `docs/upstream-asm-output-limit.md`。
 
+> **订正（2026-09-22，补记于 2026-09-29）**："所以只能用 `m64n16k16`"这句已被推翻。
+> 累加器不必是 asm 操作数：在 asm 里自行声明 `.reg .f32 %zacc<64>;`，累加器就活在
+> LLVM 不知道的寄存器里，上限不适用，`m64n128k16` 在原版 Zig 上即可表达
+> （`src/examples/hgemm_wgmma4.zig`）。代价是 LLVM 无法为这些寄存器做分配核算，
+> ptxas 可能溢出（实测 16 个寄存器溢出 = 0.55x 吞吐），所以 CI 断言 `st.local` 不出现。
+> 另外 A 进寄存器（RS 形态，`hgemm_wgmma3`）已把操作数流量降到与 n128 持平
+> （42.7 flops/byte），本节"A tile 每段重读 8 遍"的代价那一半已经消掉。
+
 发布文案（X 单帖）：
 
 > Hopper warpgroup MMA in pure Zig: 80.3 TFLOPS, 54.3% of H20 FP16 tensor peak, exact results — 1.49x over the mma.sync baseline. No LLVM intrinsic exists for wgmma.mma_async, so it is hand-written inline asm + 64-bit smem descriptors. github.com/zig-ecosystem/zoxide
@@ -161,6 +169,18 @@ wgmma 和 mma.sync 有两处本质不同。一是 **LLVM 没有 `wgmma.mma_async
 ![catalog coverage](assets/catalog-coverage.svg)
 
 M4d 前提证伪后重启：Zig asm 的 `%[name]` 具名操作数替换确认可用（此前只试了位置形式）。生成器新增 **618 条 inline-PTX wrapper**（`src/gen/instrinsics_asm.zig`），catalog 覆盖率从 32% 提到 **92%（947/1025）**——mma.sync / TMA 子集与 wgmma 控制指令可达（`wgmma.mma_async` 本身 LLVM 无 intrinsic，须手写 asm），PTX 文本验证通过（无 `$0` 残留，真实寄存器）。上游 issue 计划撤回：只剩 `llvm.nvvm.*` 文档化一个温和诉求。剩余 163 条 unmapped 的主因是 Zig asm 的 15 输出上限（tcgen05.ld 等超宽指令）。
+
+> **订正（2026-09-25 普查 / 2026-09-29 补记）**：本节的 **947/1025** 与 **剩余 163 条**
+> 两个数都不准，保留原文是因为公告是历史记录，不是当前状态。
+>
+> 原计数按**函数名**匹配，而生成器对部分条目改了命名（`packed_atomic_add_f16x2`
+> 生成为 `atom_add_f16x2`），于是把已生成的条目误判为缺失。改以 catalog `id`
+> 匹配后的真实数字是 **943/1025（92%）**，缺失 **82 条**。
+>
+> "主因是 15 输出上限"这句只对其中 71 条成立（tcgen05，41 条输出 >15、30 条输入 >31）。
+> 另外 11 条与上限无关：7 条 TMA g2s（LLVM 无 g2s 方向 intrinsic）、3 条 prefetch
+> cache_hint（生成器未覆盖该维度）、1 条 `wgmma_wait_group`（已手写在
+> `src/wgmma.zig`，只是不在生成物里）。当前口径见 README 与 `docs/PORTING.md`。
 
 ---
 

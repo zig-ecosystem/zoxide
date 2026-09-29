@@ -1,7 +1,21 @@
 # Draft: ziglang/zig issue — NVPTX inline asm operand substitution / NVVM intrinsics
 
-> 状态：**已撤回（前提证伪），仅存档**。评审通过后发到 https://github.com/ziglang/zig/issues 。
+> 状态：**已撤回（前提证伪），仅存档**。不要照这份提交。
 > 目标读者：zig 编译器维护者。写作基调：最小复现 + 明确诉求 + 真实用例，不抱怨。
+>
+> **两处已过期的信息（补记 2026-09-29）**：
+>
+> 1. **追踪器变了**：Zig 的 issue 已迁到 Codeberg（`codeberg.org/ziglang/zig`），
+>    issue 重新编号，迁移条目正文带 `Migrated from: github.com/ziglang/zig/issues/NNNNN`。
+>    本文末尾"ziglang/zig 限制 collaborator 才能开 issue"是**迁移前**的观察，
+>    对 Codeberg 是否成立未验证；提交前先实测一次。
+> 2. **覆盖率数字过期**：文中的 "329 of 1025 / remaining 689 entries 全部不可达"
+>    已被推翻两次——`%[name]` 具名替换可用（这就是本文被撤回的原因），且按 catalog `id`
+>    重数后实际覆盖 **943/1025**，缺失仅 82 条。
+>
+> 当前仍然有效的上游诉求只有一条，见 `docs/upstream-asm-output-limit.md`
+> （asm 操作数上限 15/31），那份文档已按 Codeberg 口径写好，并记录了
+> "两个追踪器都搜过、此上限从无任何既有讨论"这一事实。
 
 ---
 
@@ -72,7 +86,7 @@ Zig 0.16.0, target `nvptx64-cuda`, `-mcpu sm_90`; ptxas 12.8 for validation.
 ## 状态更新（2026-09-20）
 
 - 已按作者要求移除 zoxide 公开引用（用抽象用例描述）。
-- **发布受阻**：ziglang/zig 仓库当前限制为 collaborator 才能开 issue（gh 报 "Interactions on this repository have been restricted to collaborators only"）。
+- **发布受阻**（2026-09 早期观察，**已过期**）：ziglang/zig 的 GitHub 仓库当时限制 collaborator 才能开 issue（gh 报 "Interactions on this repository have been restricted to collaborators only"）。此后项目已迁往 Codeberg，该限制是否延续未测——见本文顶部的补记。
 - 备选渠道：① ziggit.dev 论坛发帖（Zig 官方论坛，维护者活跃）② Zig Discord #compiler 频道 ③ 等限制解除后再发 issue。草稿保持可用。
 
 ---

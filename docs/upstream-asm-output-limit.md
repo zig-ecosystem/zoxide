@@ -1,7 +1,13 @@
-# Upstream: Zig's 15-output inline-asm cap blocks wide-N Hopper `wgmma`
+# Upstream: Zig's 15-output inline-asm cap, and what it actually costs
 
 **Status:** confirmed locally against Zig 0.16.0 and `ziglang/zig` master
-(`3bfb299947`). Not yet filed upstream.
+(`3bfb299947`), including an executed reproduction of both caps. Not yet filed
+upstream; no prior art exists to file against (see below).
+
+**Revised 2026-09-29.** The title used to say the cap "blocks wide-N Hopper
+`wgmma`". It does not — a `.reg` workaround reaches every shape. The cap costs
+LLVM's register accounting, not capability, and this document's conclusions were
+rewritten to stop arguing otherwise.
 
 ## What the limit is
 
@@ -56,18 +62,26 @@ Hopper's `wgmma.mma_async` keeps its accumulator in registers spread across the
 warpgroup, and every accumulator register has to appear as an inline-asm output
 operand. `m64nNk16` needs `N/2` registers per thread:
 
-| shape | accumulator regs | expressible in Zig |
-| --- | --- | --- |
-| `m64n16k16` | 8 | yes |
-| `m64n32k16` | 16 | no — one over the cap |
-| `m64n64k16` | 32 | no |
-| `m64n128k16` | 64 | no |
+| shape | accumulator regs | as asm output operands | via the `.reg` workaround |
+| --- | --- | --- | --- |
+| `m64n16k16` | 8 | yes | n/a |
+| `m64n32k16` | 16 | no — one over the cap | yes |
+| `m64n64k16` | 32 | no | yes |
+| `m64n128k16` | 64 | no | yes (`hgemm_wgmma4`) |
 
 > **Correction (2026-09-22).** An earlier version of this document said there was
 > no way around the limit. That was wrong, and the workaround makes the cap a
 > nuisance rather than a blocker. See "There is a way around it" below. The
 > analysis of *why* the limit is 15 stands; the conclusion that it prevents
 > wide-N wgmma does not.
+>
+> **Correction (2026-09-29).** The 2026-09-22 revision inserted the workaround
+> section but left three later sections arguing from the superseded premise —
+> that wide N is unreachable and therefore unmeasurable. Those sections are
+> rewritten below. The contradiction was load-bearing for the upstream case, so
+> it is worth naming what it was: this document simultaneously claimed
+> `hgemm_wgmma4` *is* the wide-N measurement and that we are "barred from
+> measuring it."
 
 Splitting the asm does not help: one `wgmma` instruction needs its whole
 accumulator in a single operand list. And there is no intrinsic to fall back on —
@@ -123,18 +137,25 @@ hardware instruction — but it is a wart, not a wall, and this document previou
 overstated it.
 
 It also removes the circularity that justified building a patched compiler.
-Measuring what narrow N costs no longer needs one: `hgemm_wgmma4` is that
-measurement.
+Quantifying what narrow N costs no longer needs one — `hgemm_wgmma4` is that
+experiment, built on stock Zig. **It has not been run on hardware yet:** there
+is no `hgemm_wgmma4` entry under `docs/verification/`, and it is still an open
+P0 item in `docs/cuda-oxide-port-plan.md`. So the measurement is unblocked, not
+taken.
 
-So `src/examples/hgemm_wgmma.zig` is stuck on `m64n16k16` and has to tile it 8x
-to cover a 128-wide N. That re-reads the A tile from shared memory 8 times per
-K-stage instead of once, giving away part of the shared-memory bandwidth win
-that wide-N `wgmma` exists to deliver.
+`src/examples/hgemm_wgmma.zig` therefore uses `m64n16k16` by choice of form
+rather than by necessity: it tiles the shape 8x to cover a 128-wide N. In the
+all-shared form that re-reads the A tile from shared memory 8 times per K-stage
+instead of once; `hgemm_wgmma3` already recovers that by feeding A from
+registers (see the operand-traffic table below), so the remaining cost of
+narrow N is per-instruction, not traffic.
 
-Raising the cap to 32 (the `output_type_bits` ceiling) would unlock
-`m64n64k16`. CUTLASS's reference kernels use `m64n128k16` and would still be
-out of reach at 32; lifting that too would additionally require widening
-`output_type_bits`.
+Raising the cap to 32 (the `output_type_bits` ceiling) would make
+`m64n64k16` expressible with ordinary operands. `m64n128k16` — what CUTLASS's
+reference kernels use — would need `output_type_bits` widened as well. Neither
+is a capability gate any more, since the `.reg` workaround reaches both; what
+the cap costs is LLVM's register accounting, which is a correctness-adjacent
+property rather than a convenience (see "What it costs").
 
 ### Measured cost (H20, n=4096, 2026-09-21)
 
@@ -149,7 +170,7 @@ So even the narrowest wgmma shape — the only one Zig can express — is worth
 1.49x over a tuned `mma.sync` kernel, at exact results. A 3-stage pipeline then
 took it to 86284 GFLOPS (58.3%), 1.60x over the baseline.
 
-### The cap is now the leading suspect for the remaining gap
+### Per-instruction n16 efficiency is the last unexplained candidate
 
 58.3% leaves 41.7pp on the table, and three of the four candidate causes have
 been eliminated by experiment on H20 (details in `docs/verification/`):
@@ -162,7 +183,7 @@ been eliminated by experiment on H20 (details in `docs/verification/`):
 | register pressure / occupancy | closed — 98 regs at 4 blocks/SM is the optimum; both more and fewer registers are worse |
 | **per-instruction efficiency of n16** | **the only candidate left** |
 
-### Correction, and why the case is now stronger
+### Correction: operand traffic had a second solution below the cap
 
 An earlier revision of this document claimed the 3.3x operand-traffic penalty was
 *invariant to tile shape*, so that only a wider N per instruction could fix it
@@ -185,13 +206,24 @@ and I then treated that as an atomic explanation. It was not — it had at least
 two separable components, operand traffic and per-instruction cost, and the first
 had a second solution that did not need this patch.
 
-That makes the case for raising the cap sharper rather than weaker. **Operand
-traffic now matches what a wide-N instruction would demand, and the kernel is
-still 35.7pp off peak.** Whatever remains is per-instruction cost: eight
-instructions doing one instruction's work. Testing that requires a wider N, which
-is precisely what the cap forbids. The argument used to be "quantify something we
-suspect dominates"; it is now "the operand-traffic explanation has been spent, so
-the rest has to be per-instruction, and we are barred from measuring it."
+**Operand traffic now matches what a wide-N instruction would demand, and the
+kernel is still 35.7pp off peak.** Whatever remains is per-instruction cost:
+eight instructions doing one instruction's work. Testing that requires a wider
+N — which `hgemm_wgmma4` provides on stock Zig, and which therefore is no longer
+an argument for the patch. The honest statement of where this stands:
+
+* **The remaining gap is measurable today.** Run `hgemm_wgmma4` on H20 against
+  `hgemm_wgmma3`. That is a P0 item, not an upstream dependency.
+* **The cap's cost is not throughput, it is accountability.** The workaround
+  hides 64 live f32 from LLVM's register allocator, so ptxas has to fit
+  registers nobody budgeted for. CI has to assert the absence of `st.local` to
+  catch it, because the failure mode is a silent 0.55x rather than an error.
+  That is the upstream case: a language should not require hiding state from its
+  own compiler to name a hardware instruction.
+
+An earlier revision argued the opposite — that the cap barred the measurement
+and that this made the patch urgent. That was reasoning from a premise the same
+document had already retracted two sections earlier.
 
 ## Proposed change
 
@@ -211,15 +243,76 @@ No ZIR or Sema change should be needed; `outputs_len` is already `u7` and
 `output_type_bits` already has 32 bits. Going beyond 32 requires widening
 `output_type_bits`.
 
+## There is no prior art to argue against
+
+Searched 2026-09-29, both trackers. **No issue, pull request, review comment or
+forum thread anywhere mentions this limit.**
+
+* Codeberg (`ziglang/zig`, the authoritative tracker since the migration): 394
+  unique issues matching asm / assembly / operands / outputs / inputs scanned by
+  title and body, plus every comment on the 29 asm-related issues that have any
+  — zero hits for `too many asm outputs`, `15 outputs`, `31 inputs`,
+  `operand limit`. `tcgen05` and `outputs_len` return nothing at all.
+* GitHub (the pre-migration archive): same queries, zero hits. A control query
+  (`inline asm clobbers`) returns results, so the search was working.
+* `#215` (inline assembly improvements, open since 2016) and `#5241`
+  (New Inline Assembly) discuss types, stack machines and clobber syntax, never
+  operand counts.
+* `doc/langref.html.in` does not document the limit at all — it is only
+  discoverable by hitting the compile error.
+
+`06eebafadd` itself rode in on PR `#23355`, titled
+`x86_64: start rewriting overflow operations`, whose body is just
+`Closes #19607` (an unrelated multiplication bug) and which has **zero
+comments**. Its motive is inferable only from the adjacent commit
+`7a2963efab "x86_64: add avx512 registers"`, authored 48 seconds earlier:
+AVX-512 pushes the register namespace past 32, so clobber lists needed a sixth
+bit. That trade was never written down in prose.
+
+The only written trace of the limit anywhere is a regression test,
+`test/cases/compile_errors/astgen_assembly_errors.zig`, added by
+`f6fecfdc00 "improve assembly error test coverage"` (2025-11-13) — eight months
+after the fact, asserting the error message without stating a rationale.
+
+This is favourable for filing: there is no design consensus to overturn and no
+counter-argument on record. It also means the AVX-512 motive should be stated
+*for* the maintainers rather than asked about, since the change was theirs and
+undocumented.
+
 ## Not yet done
 
 - Build a patched compiler and confirm 32 outputs round-trip through Sema and
   reach the NVPTX backend intact. The reasoning above is read from the source
   (`outputs_len` is already `u7`, `output_type_bits` already 32 bits, and
   `Sema.zirAsm` no longer truncates); it has not been confirmed by building a
-  patched compiler.
-- Measure `m64n64k16` against the `m64n16k16` kernel on H20 to quantify what the
-  cap costs.
-- File upstream. Note `ziglang/zig` issue creation is restricted to
-  collaborators (see `docs/drafts/`), so this will need one of the fallback
-  channels already documented there.
+  patched compiler. **This is the one thing that should happen before filing** —
+  the whole case rests on "the encoding already allows it", and that claim is
+  currently read, not executed.
+- Run `hgemm_wgmma4` on H20 against `hgemm_wgmma3` to quantify per-instruction
+  n16 cost. Open P0, independent of upstream.
+- File upstream. **Channel note (2026-09-29):** Zig's tracker has moved to
+  Codeberg (`codeberg.org/ziglang/zig`) and issues were renumbered — migrated
+  ones carry a `Migrated from: github.com/ziglang/zig/issues/NNNNN` line. The
+  older note in `docs/drafts/` about GitHub issue creation being restricted to
+  collaborators is obsolete; re-check current Codeberg permissions before
+  assuming a fallback channel is needed.
+- Report the off-by-one while filing: when `full.outputs.len == 16` exactly,
+  `failNode(full.outputs[16], ...)` indexes one past the end. Same shape on the
+  inputs path at 32. Small, independently valid, and it demonstrates the code
+  path has had no attention.
+
+## Suggested framing when filing
+
+Three facts, in this order, because the third is the ask and the first two remove
+the objections to it:
+
+1. The 4-bit output field was carved out in `06eebafadd` to widen clobbers.
+2. Clobbers later left the bitfield entirely (`fcafc63f3d`, "inline assembly:
+   use types"), and the freed bits went back to the lengths — `outputs_len` is
+   `u7`, `inputs_len` is `u8`. The reason for the 15 no longer exists.
+3. AstGen's `>= 16` check and its `[15]` stack buffer were never updated to
+   match. Raise them to the `output_type_bits` ceiling of 32.
+
+Then the concrete use case: `wgmma.mma_async` accumulators (8/16/32/64 registers
+by shape) and `tcgen05.ld/st` (up to 128 results, 130 operands) — NVIDIA
+instructions with no LLVM intrinsic, reachable only through inline asm.

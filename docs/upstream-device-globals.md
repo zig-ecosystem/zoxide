@@ -94,9 +94,21 @@ H20 实测(2026-09-24):加上 `.visible` 后 ptxas 接受,`cuModuleGetGlobal` �
 符号且大小正确(16 字节),两轮不同的表(含 `{-100.5, 0.25, 7, 65536}`)结果全精确
 ——说明 device 每次 launch 重读,不是把值烤进了代码。
 
-仍未实测:**不加 `.visible` 是否真的解析不到**。「promoted 能用」同时也符合
-「ptxas 本来就暴露 module-scope global」这个解释,那样后处理就是多余的复杂度。
-反向对照见 `scripts/devglobal-probe.sh`(release tag `devglobal-neg-20260924`)。
+**反向对照已做,结论是否定的(订正 2026-09-29)。** 本节原写「仍未实测:不加
+`.visible` 是否真的解析不到」,那句已过期两个版本:
+
+- `devglobal-neg-20260924`(第一次)**无效**:`zoxide run` 按文件名 stem 选 example,
+  剥离后的副本叫 `dev_global_unpromoted.ptx`,于是在 unknown-example 检查处就退出了,
+  根本没走到 `cuModuleGetGlobal`。脚本却把「没 PASS」当成了确认。教训:反向对照必须
+  要求**那条具体的错误**,否则它会因为无关原因「通过」。
+- `devglobal-neg2-20260924`(第二次,有效):剥掉 `.visible` **照样能解析**。
+  也就是 ptxas 本来就把 module-scope `.global` 暴露给 `cuModuleGetGlobal`,
+  `.visible` 后处理针对的是一个不存在的问题。
+
+因此那套后处理(`src/ptx.zig`、`zoxide ptx-export` 子命令、`tools/ptx-promote.zig`)
+和它的探针脚本 `scripts/devglobal-probe.sh` 已在 `e362cf8` 一并删除——这也是本文
+早先版本里那个脚本路径现在指不到东西的原因。**本节不再构成上游诉求**:Zig 侧无需
+为 `.visible` 做任何事,可用的写法见下面「实际做法」。
 
 ## 实际做法
 
