@@ -22,6 +22,10 @@ pub const sgemm = fn (a: [*]const f32, b: [*]const f32, c: [*]f32, n: u32) void;
 /// `hgemm_wgmma2`, `hgemm_wgmma3`. f16 inputs, f32 accumulation.
 pub const hgemm = fn (a: [*]const f16, b: [*]const f16, c: [*]f32, n: u32) void;
 
+/// `hgemm_bf16`: the bf16 mma shape. bf16 has no native Zig type, so inputs
+/// are u16 bit patterns; f32 accumulation, same as the f16 family.
+pub const hgemm_bf16 = fn (a: [*]const u16, b: [*]const u16, c: [*]f32, n: u32) void;
+
 /// Shape of the `const_vs_ldg` comparison, shared because the harness computes
 /// the expected result from it.
 ///

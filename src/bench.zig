@@ -62,19 +62,20 @@ pub fn benchMain(
     const hgemm5 = std.mem.eql(u8, stem, "hgemm_wgmma3");
     const hgemm6 = std.mem.eql(u8, stem, "hgemm_wgmma4");
     const hgemm_tma = std.mem.eql(u8, stem, "hgemm_tma");
+    const hgemm_bf16 = std.mem.eql(u8, stem, "hgemm_bf16");
     const wgmma = hgemm3 or hgemm4 or hgemm5 or hgemm6 or hgemm_tma;
     const hgemm = hgemm1 or hgemm2 or wgmma;
     // Block tile (m, n). hgemm_wgmma uses one warpgroup over a 64x128 tile;
     // the mma.sync kernels use square tiles.
-    const hgemm_tile_m: usize = if (wgmma) 64 else if (hgemm2) 128 else 64;
+    const hgemm_tile_m: usize = if (wgmma) 64 else if (hgemm2 or hgemm_bf16) 128 else 64;
     const hgemm_tile_n: usize = if (wgmma) 128 else hgemm_tile_m;
-    if (!tiled and !naive and !reg and !opt and !opt2 and !swz and !hgemm) {
-        try out.print("error: bench supports sgemm_*, hgemm_mma*, hgemm_wgmma* or hgemm_tma inputs (got '{s}')\n", .{args.input});
+    if (!tiled and !naive and !reg and !opt and !opt2 and !swz and !hgemm and !hgemm_bf16) {
+        try out.print("error: bench supports sgemm_*, hgemm_mma*, hgemm_wgmma*, hgemm_tma or hgemm_bf16 inputs (got '{s}')\n", .{args.input});
         return 1;
     }
     const regblocked = reg or opt or opt2 or swz;
-    if (hgemm and args.n % 16 != 0) {
-        try out.print("error: hgemm_mma requires n % 16 == 0 (got {d})\n", .{args.n});
+    if ((hgemm or hgemm_bf16) and args.n % 16 != 0) {
+        try out.print("error: hgemm requires n % 16 == 0 (got {d})\n", .{args.n});
         return 1;
     }
     // hgemm_wgmma tiles N by 128 and has no bounds guard in the epilogue.
@@ -118,6 +119,8 @@ pub fn benchMain(
 
     const kernel_name = args.kernel_name orelse if (hgemm_tma)
         try std.fmt.allocPrint(gpa, "{s}_$_hgemmTma", .{stem})
+    else if (hgemm_bf16)
+        try std.fmt.allocPrint(gpa, "{s}_$_hgemmBf16", .{stem})
     else if (hgemm6)
         try std.fmt.allocPrint(gpa, "{s}_$_hgemmWgmma4", .{stem})
     else if (hgemm5)
@@ -186,6 +189,15 @@ pub fn benchMain(
         reportOccupancy(kern.inner, api.hgemm_tma.threads, dev_info, out) catch |e|
             try out.print("kernel: resource/occupancy query failed ({s}): {s}\n", .{ @errorName(e), drv.lastError() });
         return runHgemmTma(gpa, &ctx, kern, n, args.iters, out, dev_info);
+    }
+    if (hgemm_bf16) {
+        const kern = mod.kernel(api.hgemm_bf16, namez) catch |e| {
+            try out.print("error: {s}: {s}\n", .{ @errorName(e), drv.lastError() });
+            return 1;
+        };
+        reportOccupancy(kern.inner, 128, dev_info, out) catch |e|
+            try out.print("kernel: resource/occupancy query failed ({s}): {s}\n", .{ @errorName(e), drv.lastError() });
+        return runHgemmBf16(gpa, &ctx, kern, n, args.iters, out, hgemm_tile_m, hgemm_tile_n, dev_info);
     }
     if (hgemm) {
         const kern = mod.kernel(api.hgemm, namez) catch |e| {
@@ -396,6 +408,107 @@ fn runHgemm(gpa: std.mem.Allocator, ctx: *gpu.Context, kern: gpu.Kernel(api.hgem
     try out.print("global reads: {d:.2} GB demand -> {d:.2} TB/s (L2 absorbs repeats; DRAM is lower)\n", .{ demand_bytes / 1e9, gbs / 1000 });
     if (dev_info) |di| {
         const operands_bytes: f64 = @floatFromInt(2 * n * n * 2); // A + B in f16
+        const l2: f64 = @floatFromInt(di.l2_bytes);
+        try out.print("A+B working set: {d:.0} MB vs {d:.0} MB L2 — {s}\n", .{
+            operands_bytes / (1 << 20),
+            l2 / (1 << 20),
+            if (operands_bytes <= l2) "fits, so repeat reads stay on chip" else "exceeds L2, repeat reads reach DRAM",
+        });
+    }
+
+    const c = try gpa.alloc(f32, elems);
+    defer gpa.free(c);
+    @memset(c, 0);
+    return finishVerify(gpa, ctx, dc, a, b, c, n, out);
+}
+
+/// H20 BF16 tensor peak equals the FP16 peak (148 TFLOPS dense).
+const h20_bf16_peak_gflops: f64 = 148000;
+
+/// bf16 bit pattern of an f32 value. Zig has no native bf16; the pattern is
+/// the high 16 bits of the f32 encoding (round-to-nearest is irrelevant for
+/// the values used here — see below).
+fn f32ToBf16Bits(x: f32) u16 {
+    return @truncate(@as(u32, @bitCast(x)) >> 16);
+}
+
+/// HGEMM bf16 harness: same shape as runHgemm, but inputs are u16 bf16 bit
+/// patterns. Values are small integers in -2..2, which are exact in bf16
+/// (8-bit mantissa), so the f64 CPU reference and the rel-err-1e-2 check are
+/// not hiding any precision slack: products are exact, f32 accumulation of
+/// n=4096 integer products stays far inside f32's exact-integer range, and
+/// the comparison is effectively exact — the same trick hgemm_mma2 uses,
+/// applied to a storage type Zig cannot name.
+fn runHgemmBf16(gpa: std.mem.Allocator, ctx: *gpu.Context, kern: gpu.Kernel(api.hgemm_bf16), n: usize, iters: u32, out: *std.Io.Writer, tile_m: usize, tile_n: usize, dev_info: ?cu.Context.Info) !u8 {
+    const elems = n * n;
+    const ah = try gpa.alloc(u16, elems);
+    defer gpa.free(ah);
+    const bh = try gpa.alloc(u16, elems);
+    defer gpa.free(bh);
+    const a = try gpa.alloc(f32, elems); // f32 mirrors for the CPU reference
+    defer gpa.free(a);
+    const b = try gpa.alloc(f32, elems);
+    defer gpa.free(b);
+    var rng: u32 = 0x2468ace0;
+    for (ah, 0..) |*v, i| {
+        const x: i32 = @intCast(xorshift(&rng) % 5);
+        const val: f32 = @floatFromInt(x - 2); // -2..2, exact in bf16
+        v.* = f32ToBf16Bits(val);
+        a[i] = val;
+    }
+    for (bh, 0..) |*v, i| {
+        const x: i32 = @intCast(xorshift(&rng) % 5);
+        const val: f32 = @floatFromInt(x - 2);
+        v.* = f32ToBf16Bits(val);
+        b[i] = val;
+    }
+
+    const da = try ctx.allocSlice(u16, elems);
+    defer ctx.freeSlice(da);
+    const db = try ctx.allocSlice(u16, elems);
+    defer ctx.freeSlice(db);
+    const dc = try ctx.allocSlice(f32, elems);
+    defer ctx.freeSlice(dc);
+    try ctx.upload(da, ah);
+    try ctx.upload(db, bh);
+    // Poisoned rather than zeroed: a kernel that writes nothing then cannot
+    // pass verification by leaving plausible zeros behind.
+    try ctx.fillBytes(dc, 0xff);
+
+    // Slice(u16) for A and B, Slice(f32) for C, checked against
+    // api.hgemm_bf16 — which is also what the kernel asserts itself against.
+    const kargs = .{ da, db, dc, @as(u32, @intCast(n)) };
+    // grid.x walks N, grid.y walks M.
+    const grid_x: u32 = @intCast((n + tile_n - 1) / tile_n);
+    const grid_y: u32 = @intCast((n + tile_m - 1) / tile_m);
+
+    const start = try ctx.eventCreate();
+    defer start.destroy();
+    const stop = try ctx.eventCreate();
+    defer stop.destroy();
+    var best_ms: f32 = std.math.floatMax(f32);
+    var it: u32 = 0;
+    while (it < iters) : (it += 1) {
+        try start.record();
+        try kern.launch(.{ .x = grid_x, .y = grid_y }, .{ .x = 128 }, kargs);
+        try stop.record();
+        try stop.sync();
+        const ms = try start.elapsedMs(stop);
+        if (ms < best_ms) best_ms = ms;
+    }
+
+    const flops = 2.0 * @as(f64, @floatFromInt(n)) * @as(f64, @floatFromInt(n)) * @as(f64, @floatFromInt(n));
+    const gflops = flops / (@as(f64, best_ms) * 1e6);
+    try out.print("bench: hgemm_bf16(tile={d}x{d}) n={d} iters={d}\n", .{ tile_m, tile_n, n, iters });
+    try out.print("best: {d:.3} ms over {d} iters\n", .{ best_ms, iters });
+    try out.print("GFLOPS: {d:.1} ({d:.1}% of H20 BF16 tensor peak ~{d:.0} GFLOPS)\n", .{ gflops, gflops / h20_bf16_peak_gflops * 100, h20_bf16_peak_gflops });
+
+    const blocks = ((n + tile_m - 1) / tile_m) * ((n + tile_n - 1) / tile_n);
+    const demand_bytes: f64 = @floatFromInt(blocks * (tile_m + tile_n) * n * 2);
+    const gbs = demand_bytes / (@as(f64, best_ms) * 1e-3) / 1e9;
+    try out.print("global reads: {d:.2} GB demand -> {d:.2} TB/s (L2 absorbs repeats; DRAM is lower)\n", .{ demand_bytes / 1e9, gbs / 1000 });
+    if (dev_info) |di| {
+        const operands_bytes: f64 = @floatFromInt(2 * n * n * 2); // A + B in bf16
         const l2: f64 = @floatFromInt(di.l2_bytes);
         try out.print("A+B working set: {d:.0} MB vs {d:.0} MB L2 — {s}\n", .{
             operands_bytes / (1 << 20),

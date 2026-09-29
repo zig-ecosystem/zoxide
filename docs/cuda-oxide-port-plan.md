@@ -59,6 +59,7 @@
     - prefetch 6 条(1d_l2、5d_l2、gather4_2d_l2、2d/3d/4d 的 cache_hint):fire-and-forget,无 mbarrier 依赖,是 13 条里成本最低的一批;NVVM 已暴露部分非 cache_hint 形式(2d/4d_l2 已生成),补法 = 生成器补 cache_hint 维度或手写 6 条 asm。
   - 同次普查的附带订正:packed_atomic 缺 2 条是**误报**(`packed_atomic_add_{f16x2,bf16x2}` 已生成为 `atom_add_{f16x2,bf16x2}`,fn 名 ≠ catalog id);`wgmma_wait_group` 缺 1 条同理(手写在 `src/wgmma.zig`);sparse_mma 缺 4 条为 fp8(e4m3/e5m2)m16n8k64 非 ordered_metadata 形,归 P2 sparse mma 条目;sreg 12 条为无 probe 的原始寄存器读,常用项已手写在 cuda.zig。
 - [ ] **mma 形状扩展**:bf16、int8/int4、fp8/f6/f4 的 mma.sync 形状。依赖 P1b(ldmatrix)与 P1d(packed/cvt)。每个形状 = 一个 bench 变体进 hgemm 家族,沿用现有"精确结果 + 峰值占比"口径。
+  - 进展(2026-09-29):**bf16 形状完成(PTX 级)**——`hgemm_bf16`(hgemm_mma2 同构,mma.sync m16n8k16 bf16,Zig 无 bf16 类型故以 u16 位模式传输),bench 变体 + CI PTX grep 断言已就位;真机计时/正确性验证挂起至 GPU 环境。int8/fp8 等其余形状未动。
 - [ ] **sparse mma**:catalog 有条目,等 P2 mma 基建成熟后按同一模式生成。
 - [ ] **tcgen05(Blackwell)**:仅当拿到 sm_100 真机才排期。`.reg` 绕法已验证可行,但 spill 代价数据(wgmma4 首跑会产出)决定这条路值不值得走。当前标注 blocked-on-hardware。
 

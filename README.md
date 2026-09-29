@@ -187,6 +187,7 @@ SGEMM (C = A·B, square f32) harness with CUDA event timing:
 ./zoxide bench hgemm_wgmma.ptx  --n 4096 --iters 10 --arch sm_90a   # warpgroup MMA (wgmma.mma_async)
 ./zoxide bench hgemm_wgmma2.ptx --n 4096 --iters 10 --arch sm_90a   # + 3-stage pipeline
 ./zoxide bench hgemm_wgmma3.ptx --n 4096 --iters 10 --arch sm_90a   # + A from registers (RS)
+./zoxide bench hgemm_bf16.ptx --n 4096 --iters 10   # bf16 mma.sync m16n8k16 (hgemm_mma2 shape, u16 storage)
 ```
 
 - `sgemm_naive.zig`: one thread per C element, direct global loads (baseline).
@@ -237,6 +238,12 @@ reg 15319 (34.8%) of the ~44 TFLOPS FP32 peak; reg verified at n=4000
   (`cp_async_wait_group` takes a comptime immediate — the NVVM intrinsic's
   runtime i32 form does not select).
   Measured on H20: 54.5 TFLOPS (36.4% of FP16 tensor peak), exact results.
+- `hgemm_bf16.zig`: hgemm_mma2's shape with bf16 inputs
+  (`mma.sync.aligned.m16n8k16.row.col.f32.bf16.bf16.f32`). Zig has no bf16
+  type, so values move as u16 bit patterns through the same ldmatrix +
+  cp.async pipeline; only the mma element type differs. First P2 "mma 形状扩展"
+  variant. PTX-complete and CI-asserted; real-GPU measurement is parked
+  (no GPU on the dev machine).
 ![HGEMM progression on H20](docs/assets/hgemm-progression.svg)
 
 - `hgemm_wgmma.zig`: Hopper warpgroup MMA. 86.3 TFLOPS (54.3% of FP16 tensor

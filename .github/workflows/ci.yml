@@ -104,6 +104,15 @@ jobs:
           test "$(grep -c 'mma\.sync\.aligned\.m16n8k16' hgemm_mma2.ptx)" -eq 64
           if grep -qE '\$[0-9]|%\[' hgemm_mma2.ptx; then echo "hgemm_mma2: unsubstituted operand"; exit 1; fi
           test "$(grep -c 'bar\.sync' hgemm_mma2.ptx)" -eq 2
+          # hgemm_bf16: bf16 mma shape over the same ldmatrix + cp.async
+          # pipeline as hgemm_mma2.
+          test "$(grep -c 'mma\.sync\.aligned\.m16n8k16\.row\.col\.f32\.bf16\.bf16\.f32' hgemm_bf16.ptx)" -eq 64
+          grep -q 'ldmatrix\.sync\.aligned\.m8n8\.x4' hgemm_bf16.ptx
+          grep -q 'ldmatrix\.sync\.aligned\.m8n8\.x2\.trans' hgemm_bf16.ptx
+          grep -q 'cp\.async\.cg\.shared\.global' hgemm_bf16.ptx
+          grep -q 'cp\.async\.wait_group' hgemm_bf16.ptx
+          if grep -qE '\$[0-9]|%\[' hgemm_bf16.ptx; then echo "hgemm_bf16: unsubstituted operand"; exit 1; fi
+          test "$(grep -c 'bar\.sync' hgemm_bf16.ptx)" -eq 2
           # wgmma kernels: sm_90a target, RS vs SS operand forms, pipeline depth.
           for f in wgmma_smoke hgemm_wgmma hgemm_wgmma2 hgemm_wgmma3; do
             grep -q '\.target sm_90a' "$f.ptx" || { echo "$f: not built for sm_90a"; exit 1; }
