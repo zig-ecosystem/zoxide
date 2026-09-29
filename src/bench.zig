@@ -61,14 +61,15 @@ pub fn benchMain(
     const hgemm4 = std.mem.eql(u8, stem, "hgemm_wgmma2");
     const hgemm5 = std.mem.eql(u8, stem, "hgemm_wgmma3");
     const hgemm6 = std.mem.eql(u8, stem, "hgemm_wgmma4");
-    const wgmma = hgemm3 or hgemm4 or hgemm5 or hgemm6;
+    const hgemm_tma = std.mem.eql(u8, stem, "hgemm_tma");
+    const wgmma = hgemm3 or hgemm4 or hgemm5 or hgemm6 or hgemm_tma;
     const hgemm = hgemm1 or hgemm2 or wgmma;
     // Block tile (m, n). hgemm_wgmma uses one warpgroup over a 64x128 tile;
     // the mma.sync kernels use square tiles.
     const hgemm_tile_m: usize = if (wgmma) 64 else if (hgemm2) 128 else 64;
     const hgemm_tile_n: usize = if (wgmma) 128 else hgemm_tile_m;
     if (!tiled and !naive and !reg and !opt and !opt2 and !swz and !hgemm) {
-        try out.print("error: bench supports sgemm_*, hgemm_mma* or hgemm_wgmma inputs (got '{s}')\n", .{args.input});
+        try out.print("error: bench supports sgemm_*, hgemm_mma*, hgemm_wgmma* or hgemm_tma inputs (got '{s}')\n", .{args.input});
         return 1;
     }
     const regblocked = reg or opt or opt2 or swz;
@@ -115,7 +116,9 @@ pub fn benchMain(
     };
     defer gpa.free(cubin);
 
-    const kernel_name = args.kernel_name orelse if (hgemm6)
+    const kernel_name = args.kernel_name orelse if (hgemm_tma)
+        try std.fmt.allocPrint(gpa, "{s}_$_hgemmTma", .{stem})
+    else if (hgemm6)
         try std.fmt.allocPrint(gpa, "{s}_$_hgemmWgmma4", .{stem})
     else if (hgemm5)
         try std.fmt.allocPrint(gpa, "{s}_$_hgemmWgmma3", .{stem})
@@ -175,6 +178,15 @@ pub fn benchMain(
     // reading shared-memory totals out of the PTX ignores the register limit and
     // goes stale as soon as the kernel changes.
 
+    if (hgemm_tma) {
+        const kern = mod.kernel(api.hgemm_tma.signature, namez) catch |e| {
+            try out.print("error: {s}: {s}\n", .{ @errorName(e), drv.lastError() });
+            return 1;
+        };
+        reportOccupancy(kern.inner, api.hgemm_tma.threads, dev_info, out) catch |e|
+            try out.print("kernel: resource/occupancy query failed ({s}): {s}\n", .{ @errorName(e), drv.lastError() });
+        return runHgemmTma(gpa, &ctx, kern, n, args.iters, out, dev_info);
+    }
     if (hgemm) {
         const kern = mod.kernel(api.hgemm, namez) catch |e| {
             try out.print("error: {s}: {s}\n", .{ @errorName(e), drv.lastError() });
@@ -380,6 +392,130 @@ fn runHgemm(gpa: std.mem.Allocator, ctx: *gpu.Context, kern: gpu.Kernel(api.hgem
     // kernel was traffic-limited.
     const blocks = ((n + tile_m - 1) / tile_m) * ((n + tile_n - 1) / tile_n);
     const demand_bytes: f64 = @floatFromInt(blocks * (tile_m + tile_n) * n * 2);
+    const gbs = demand_bytes / (@as(f64, best_ms) * 1e-3) / 1e9;
+    try out.print("global reads: {d:.2} GB demand -> {d:.2} TB/s (L2 absorbs repeats; DRAM is lower)\n", .{ demand_bytes / 1e9, gbs / 1000 });
+    if (dev_info) |di| {
+        const operands_bytes: f64 = @floatFromInt(2 * n * n * 2); // A + B in f16
+        const l2: f64 = @floatFromInt(di.l2_bytes);
+        try out.print("A+B working set: {d:.0} MB vs {d:.0} MB L2 — {s}\n", .{
+            operands_bytes / (1 << 20),
+            l2 / (1 << 20),
+            if (operands_bytes <= l2) "fits, so repeat reads stay on chip" else "exceeds L2, repeat reads reach DRAM",
+        });
+    }
+
+    const c = try gpa.alloc(f32, elems);
+    defer gpa.free(c);
+    @memset(c, 0);
+    return finishVerify(gpa, ctx, dc, a, b, c, n, out);
+}
+
+/// TMA variant of runHgemm (S2): same data, timing loop and verification as
+/// `hgemm_wgmma3`, plus the two descriptors the kernel loads through.
+///
+/// The expect_tx byte counts are cross-checked against the descriptors that
+/// were actually encoded — `TensorMap.tileBytes()` — rather than recomputed
+/// here, because that count written wrong does not fault: too low and the
+/// barrier releases on partial data, too high and it never releases.
+fn runHgemmTma(gpa: std.mem.Allocator, ctx: *gpu.Context, kern: gpu.Kernel(api.hgemm_tma.signature), n: usize, iters: u32, out: *std.Io.Writer, dev_info: ?cu.Context.Info) !u8 {
+    const p = api.hgemm_tma;
+    const elems = n * n;
+    const ah = try gpa.alloc(f16, elems);
+    defer gpa.free(ah);
+    const bh = try gpa.alloc(f16, elems);
+    defer gpa.free(bh);
+    const a = try gpa.alloc(f32, elems); // f32 mirrors for the CPU reference
+    defer gpa.free(a);
+    const b = try gpa.alloc(f32, elems);
+    defer gpa.free(b);
+    var rng: u32 = 0x2468ace0;
+    for (ah, 0..) |*v, i| {
+        const x: i32 = @intCast(xorshift(&rng) % 5);
+        const val: f32 = @floatFromInt(x - 2); // -2..2, exact in f16
+        v.* = @floatCast(val);
+        a[i] = val;
+    }
+    for (bh, 0..) |*v, i| {
+        const x: i32 = @intCast(xorshift(&rng) % 5);
+        const val: f32 = @floatFromInt(x - 2);
+        v.* = @floatCast(val);
+        b[i] = val;
+    }
+
+    const da = try ctx.allocSlice(f16, elems);
+    defer ctx.freeSlice(da);
+    const db = try ctx.allocSlice(f16, elems);
+    defer ctx.freeSlice(db);
+    const dc = try ctx.allocSlice(f32, elems);
+    defer ctx.freeSlice(dc);
+    try ctx.upload(da, ah);
+    try ctx.upload(db, bh);
+    // Poisoned rather than zeroed: a kernel that writes nothing then cannot
+    // pass verification by leaving plausible zeros behind.
+    try ctx.fillBytes(dc, 0xff);
+
+    // Both tensors are n x n row-major f16, described innermost-first. A is
+    // one box per stage (16 k x 64 m, plain row-major — the ldmatrix layout);
+    // B is one 8-col x 16-k box per wgmma n-block, reproducing the core-matrix
+    // packing the wgmma descriptor reads (see hgemm_tma.zig). No swizzle.
+    const dim = [_]u64{ n, n };
+    const strides = [_]u64{n * @sizeOf(f16)};
+    const box_a = [_]u32{ p.k_slice, p.tile_m };
+    const box_b = [_]u32{ 8, p.k_slice };
+    const map_a = ctx.inner.encodeTensorMap(f16, da.ptr, dim[0..], strides[0..], box_a[0..], .{}) catch {
+        try out.print("FAIL: encodeTensorMap(A): {s}\n", .{ctx.inner.drv.lastError()});
+        return 1;
+    };
+    const map_b = ctx.inner.encodeTensorMap(f16, db.ptr, dim[0..], strides[0..], box_b[0..], .{}) catch {
+        try out.print("FAIL: encodeTensorMap(B): {s}\n", .{ctx.inner.drv.lastError()});
+        return 1;
+    };
+    // Cross-check the byte counts the kernel will wait on against the
+    // descriptors just encoded, before they can deadlock a launch.
+    if (map_a.tileBytes() != p.a_tile_bytes) {
+        try out.print("FAIL: A descriptor tile is {d} bytes, kernel reserves {d}\n", .{ map_a.tileBytes(), p.a_tile_bytes });
+        return 1;
+    }
+    if (map_b.tileBytes() * p.b_subtiles != p.b_tile_bytes) {
+        try out.print("FAIL: B descriptor tile is {d} x {d} bytes, kernel reserves {d}\n", .{ map_b.tileBytes(), p.b_subtiles, p.b_tile_bytes });
+        return 1;
+    }
+
+    const ddesc_a = try ctx.allocSlice(u8, @sizeOf(cu.CUtensorMap));
+    defer ctx.freeSlice(ddesc_a);
+    const ddesc_b = try ctx.allocSlice(u8, @sizeOf(cu.CUtensorMap));
+    defer ctx.freeSlice(ddesc_b);
+    try ctx.upload(ddesc_a, std.mem.asBytes(&map_a.map));
+    try ctx.upload(ddesc_b, std.mem.asBytes(&map_b.map));
+
+    const kargs = .{ da, db, dc, @as(u32, @intCast(n)), ddesc_a.ptr, ddesc_b.ptr };
+    // grid.x walks N, grid.y walks M.
+    const grid_x: u32 = @intCast((n + p.tile_n - 1) / p.tile_n);
+    const grid_y: u32 = @intCast((n + p.tile_m - 1) / p.tile_m);
+
+    const start = try ctx.eventCreate();
+    defer start.destroy();
+    const stop = try ctx.eventCreate();
+    defer stop.destroy();
+    var best_ms: f32 = std.math.floatMax(f32);
+    var it: u32 = 0;
+    while (it < iters) : (it += 1) {
+        try start.record();
+        try kern.launch(.{ .x = grid_x, .y = grid_y }, .{ .x = p.threads }, kargs);
+        try stop.record();
+        try stop.sync();
+        const ms = try start.elapsedMs(stop);
+        if (ms < best_ms) best_ms = ms;
+    }
+
+    const flops = 2.0 * @as(f64, @floatFromInt(n)) * @as(f64, @floatFromInt(n)) * @as(f64, @floatFromInt(n));
+    const gflops = flops / (@as(f64, best_ms) * 1e6);
+    try out.print("bench: hgemm_tma(tile={d}x{d}) n={d} iters={d}\n", .{ p.tile_m, p.tile_n, n, iters });
+    try out.print("best: {d:.3} ms over {d} iters\n", .{ best_ms, iters });
+    try out.print("GFLOPS: {d:.1} ({d:.1}% of H20 FP16 tensor peak ~{d:.0} GFLOPS)\n", .{ gflops, gflops / h20_fp16_peak_gflops * 100, h20_fp16_peak_gflops });
+
+    const blocks = ((n + p.tile_m - 1) / p.tile_m) * ((n + p.tile_n - 1) / p.tile_n);
+    const demand_bytes: f64 = @floatFromInt(blocks * (p.tile_m + p.tile_n) * n * 2);
     const gbs = demand_bytes / (@as(f64, best_ms) * 1e-3) / 1e9;
     try out.print("global reads: {d:.2} GB demand -> {d:.2} TB/s (L2 absorbs repeats; DRAM is lower)\n", .{ demand_bytes / 1e9, gbs / 1000 });
     if (dev_info) |di| {

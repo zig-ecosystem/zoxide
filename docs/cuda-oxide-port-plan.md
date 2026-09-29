@@ -19,10 +19,9 @@
 
 前提:`docs/tma-plan.md` 的 H1–H3 判据已立,这一阶段只执行,不重新论证。
 
-- [ ] **TMA S0 真机验证**(hgemm_tma 或独立 smoke kernel)
-  - 无 GPU 门:H1——PTX 中地址运算指令(add.s64/shl/and/or/mul.wide)从 144 降到 70 以下。不满足 → 停止,按 tma-plan.md H1 反向对照处理。
-  - 真机门:H2(regs 下降)+ H3(吞吐 ±3% 以内为预期;显著变化要回头查 v0.0.9 排除逻辑)。
-  - 证据写入 `docs/verification/`,ROADMAP 追加一行。
+- [x] **TMA S0/S1 实现 + S2 H1 判定**(2026-09-25,H1 数据:**不成立**,144→135 即 −6.25%,判据要求 <70)
+  - 判定依据:tma-plan.md S2 节(地址运算主体在 wgmma descriptor 打包与 C 写回路径,不在载入路径;反向对照条款生效,S3 吞吐测量不再进行)。
+  - 遗留:H2(ptxas regs)与 tma_smoke 真机 PASS 需 GPU,挂起至 GPU 环境;TMA 线优先级随之整体下调,P2 的 TMA 补全动机只剩"能力完整性"。
 - [ ] **hgemm_wgmma4(m64n128k16)真机首跑**
   - PTX 级已验证(`docs/upstream-asm-output-limit.md`),只欠真机。
   - 注意 `.reg` 绕法失去 LLVM 寄存器记账,溢出代价实测 0.55×——首跑第一件事是看 ptxas 报告有无 local spill,有 spill 直接记录为".reg 路线代价数据",不为它调优。
@@ -32,21 +31,18 @@
 
 ## P1 — intrinsics 广度 + 数学库
 
-策略:不手写。cuda-oxide 的 `intrinsics/catalog.json` 已有全部 1025 条的 ABI、effects、PTX ISA floor 和 libNVVM 验证证据;zoxide 的 `src/gen` 已经证明"catalog → Zig 绑定"这条生成路径可行(329 NVVM + 618 asm)。这一阶段是**把生成器的消费面从"已映射子集"扩到剩余条目**,按主题分批,每批独立提交、独立 smoke 验证。
+策略:不手写。cuda-oxide 的 `intrinsics/catalog.json` 已有全部 1025 条的 ABI、effects、PTX ISA floor 和 libNVVM 验证证据;zoxide 的 `src/gen` 已经证明"catalog → Zig 绑定"这条生成路径可行(329 NVVM + 618 asm)。
 
-依赖确认(开工第一步):catalog 中剩余 ~470 条(1025 − 已映射)逐条过一遍三分类:
-1. 可直接生成(asm 操作数 ≤15 输出 / ≤31 输入)→ 进生成器;
-2. 超宽指令(tcgen05 等)→ 走 `.reg` 函数级声明绕法(先例:`hgemm_wgmma4`,注意 spill 代价);
-3. 语义已由 Zig 原生覆盖(如 f16 算术,ROADMAP f16 节结论)→ 跳过,记录理由。
+**2026-09-25 普查订正**:以 `id` 在 `src/gen/` 两个产出中匹配计,实际已生成 **943/1025**,缺失只有 82:tcgen05 71、tma 10、wgmma_control 1——全部是 asm 输出 >15 的超宽指令,属 asm 上限受限项,不是"没做"。因此 P1 的重点从"扩大生成面"修正为:**验证**(逐 family 的 smoke kernel + PTX grep 断言,防上游回退)、**人性化层**(src/cuda.zig 补高层封装,如 redux/shuffle 更多类型/原子扩展)、以及 P1f libdevice。剩余 82 条归入 P2(tcgen05 需 Blackwell;tma 缺的 10 条需逐条看)。
 
-分批(每批 = 一个 alpha 版本):
+分批(每批 = 一个 alpha 版本)——**2026-09-25 全部完成**(无 GPU,验收=编译+PTX 断言):
 
-- [ ] **P1a:async copy + mbarrier**——cp.async(g2s,zfill 变体)、mbarrier init/arrive/expect_tx/try_wait/test_wait。理由:TMA 和后续所有 Hopper 流水 kernel 的同步底座,P0 的 TMA 线已在用 mbarrier 子集,补全是顺手的事。
-- [ ] **P1b:ldmatrix / movmatrix / stmatrix**——wgmma/mma 的 smem→寄存器装载路径,直接影响 P2 加速器面。
-- [ ] **P1c:warp 级补全**——redux.sync(sum/min/max,f32/int)、lanemask 系列、active_mask、shuffle 的 u64/f64 与带 sync 变体。理由:规约 kernel 的性能件,实现成本极低。
-- [ ] **P1d:packed 类型与转换**——f16x2/bf16x2/f32x2/i16x2 的 cvt/prmt/clc/dotprod、fp8↔f16 打包转换。理由:bf16/fp8 mma(P2)的前置。
-- [ ] **P1e:原子扩展**——atomic 全家(作用域语义、cas、packed atomic add、atomicAdd f16/f64/bf16 等)。理由:独立小批,不阻塞别人。
-- [ ] **P1f:libdevice 映射**——`__nv_*` 数学函数到 Zig 的绑定层(对标 cuda-oxide 的 libdevice 映射)。形态建议:生成 wrapper + 链接期解析 libdevice bitcode(若 Zig NVPTX 后端支持)或逐条转 PTX 近似指令。开工先验证哪种形态可行,再定实现。
+- [x] **P1a:async copy + mbarrier**——35/35 过编译且入 PTX(`cpasync_mbar_smoke.ptx`)。发现:asm 侧 mbarrier wrapper 收 u64 地址,smoke 侧零扩展适配,真机用前生成器应改 u32。
+- [x] **P1b:ldmatrix/stmatrix/movmatrix**——ldmatrix 18/18 + movmatrix 1/1;**stmatrix 4 条 LLVM NVPTX 不 lower**,手写 asm 覆盖(`ldmatrix_smoke.ptx`,sm_100a);ldmatrix b8/b8x16 需 sm_100a(sm_90a 上 Cannot select)。
+- [x] **P1c:warp 级补全**——36/38(redux 16、vote 4、shuffle 12、match 2/4、activemask、bar.warp.sync,`warpops_smoke.ptx`);**match.all 2 条**因 {i32,i1} 聚合返回 LLVM 不支持不可用;f32 redux 需 sm_100a。
+- [x] **P1d:packed 类型与转换**——127/127(packed_alu/conversion/atomic、dotprod、prmt、clc、minmax 全家,`packed_smoke.ptx`);dp2a 的 2 条 LLVM 无选择模式,手写 asm 覆盖。
+- [x] **P1e:原子扩展**——cuda.zig 人性化层扩展:atomicAdd f64、atomicMin/Max/And/Or/Xor/Exch/Cas(走 @atomicRmw);red.* 与 inc/dec(PTX 独有)手写 asm,`atomics_smoke.ptx` 30 形态。发现:catalog 中普通 atom/red 条目为 0,gen 无从生成;scoped 变体(@atomicRmw 无法选 scope)未纳入。
+- [x] **P1f:libdevice 映射**——三条路线实测(docs/libdevice-path.md):zig 直链 .bc 不可行;llvm-link 手工管线可行但工具链耦合+许可灰色;**采用路线 3**:src/math.zig 三层(fast=单指令 approx、native=Zig 内建、software=多项式),`math_smoke.ptx`。f64 超越函数与大参数精确 sin/cos 为已知边界。
 
 **每批的完成定义**(统一):
 - 无 GPU 门:每条新 wrapper 有 smoke kernel,`zig build kernels` 产出的 PTX 含目标指令(grep 断言,防上游回退,先例:f16_native CI 断言)。
@@ -55,7 +51,7 @@
 
 ## P2 — TMA 补全 + 加速器面
 
-前提:P0 的 TMA 结论(尤其 H3——若 TMA 吞吐预期为空结果,P2 的动机就只剩"能力完整性",优先级可降)。
+前提:P0 的 TMA 结论**已出且为否**(H1 不成立,见 tma-plan.md S2)——TMA 对 hgemm 吞吐的动机已被数据否定,P2 的 TMA 项动机只剩"能力完整性",优先级确认下调;TMA s2g/multicast 如无外部需求可继续挂起。
 
 - [ ] **TMA s2g + multicast**:s2g wrapper 已有生成物,补 smoke 验证;multicast 依赖 cluster(tma-plan.md 已注明 cluster 不排期),multicast 随之挂起,除非届时有集群硬件需求。
 - [ ] **mma 形状扩展**:bf16、int8/int4、fp8/f6/f4 的 mma.sync 形状。依赖 P1b(ldmatrix)与 P1d(packed/cvt)。每个形状 = 一个 bench 变体进 hgemm 家族,沿用现有"精确结果 + 峰值占比"口径。

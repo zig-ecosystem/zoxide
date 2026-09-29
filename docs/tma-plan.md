@@ -153,9 +153,41 @@ LLVM 没有暴露这个方向的 intrinsic,生成器也就没产出。所以和
 教训:**任何设备侧等待在测试里都必须有界**。这和「正确性检查要和计时放在一起」
 是同一条原则——失败必须能说出自己是什么。
 
-### S2 — TMA 版 hgemm(需 GPU)
-tile 形状与 `hgemm_wgmma3` **完全一致**(m64n128k16 三级流水),只替换载入路径。
-H1 在这一步用 PTX 判定(无 GPU 即可),H2 用 ptxas 报告判定。
+### S2 — TMA 版 hgemm(PTX 级完成,H1 判定:**不成立**)
+
+已实现(`hgemm_tma`,2026-09-25,本机无 GPU):tile 形状与 `hgemm_wgmma3`
+完全一致(m64n128k16 三级流水),只替换载入路径。A 一次 `load2D`
+(box {16,64});B 的 core-matrix packed 布局 TMA 单个 box 线性产出不了,
+用每 stage 16 次小 `load2D`(box 8×16 = 256B)精确复现,wgmma descriptor
+零改动、swizzle 全 `.none`。每 stage 一个 mbarrier,有界 `tryWaitFor`,
+超时的线程把 C tile 写 NaN 配合 host 0xff 毒化诊断。
+
+H1 判定数据(行首指令统计,口径 = `add.s64`+`shl.*`+`and.*`+`or.*`+`mul.wide.*`):
+
+| | wgmma3 | hgemm_tma |
+|---|---|---|
+| add.s64 | 68 | 39 |
+| shl.* | 25 | 17 |
+| and.* | 23 | 21 |
+| or.* | 24 | **53** |
+| mul.wide.* | 4 | 5 |
+| **合计** | **144** | **135** |
+
+降幅 6.25%,判据要求 <70(−50%)。**H1 不成立,按反向对照条款处理:S3
+吞吐测量不再进行,cp.async 版保留。**
+
+归属:载入路径净变化只有 −9;TMA 侧还新增 32 条 `or.b32`(16 个 B 子 tile
+的 x 坐标拼接)。残余 ~135 条主体两版相同:wgmma descriptor 位打包(~42 条)、
+C epilogue 寻址、ldmatrix 地址——都在计算/写回路径,TMA 不碰。旁证:51 条
+`cp.async.bulk.tensor.2d`、0 条旧 cp.async,载入确实换干净了,总语句反而
+526 → 883。
+
+唯一剩余空间是把 B 换成 SW128 swizzle 单 descriptor(消 32 条 or.b32,
+hgemm_tma 文件头有注释),但即使全消也只有 144→103,仍到不了 70——
+**判据本身已被数据否定**,不再继续榨。
+
+结论:TMA 对 hgemm 的地址运算预言是错的。TMA 的价值判断回到「代码更短、
+寄存器更省」这一侧,有待 H2(ptxas regs,需 GPU)顺带观测,不再单独投入。
 
 ### S3 — 吞吐测量(需 GPU)
 仅在 H1 成立时进行。与 `hgemm_wgmma3` 同 n、同 iters、同正确性检查。

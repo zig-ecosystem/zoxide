@@ -41,11 +41,67 @@ pub const const_vs_ldg = struct {
     pub const signature = fn (out: [*]f32, in: [*]const f32, n: u32) void;
 };
 
+/// `cpasync_mbar_smoke`: compile smoke for the generated cp.async + mbarrier
+/// bindings (src/gen), covering all six async-copy/barrier families.
+pub const cpasync_mbar_smoke = struct {
+    pub const signature = fn (src: [*]const u8, diag: [*]u32) void;
+};
+
+/// `ldmatrix_smoke`: compile smoke for the generated ldmatrix / stmatrix /
+/// movmatrix bindings (src/gen), covering all three matrix families.
+pub const ldmatrix_smoke = struct {
+    pub const signature = fn (src: [*]const u8, diag: [*]u32) void;
+};
+
+/// `warpops_smoke`: compile smoke for the generated warp-level bindings
+/// (src/gen), covering redux, warp_match, vote, active_mask, warp_barrier and
+/// warp_shuffle (38 decls).
+pub const warpops_smoke = struct {
+    pub const signature = fn (src: [*]const i32, diag: [*]u32) void;
+};
+
+/// `packed_smoke`: compile smoke for the generated packed-data bindings
+/// (src/gen), covering packed_alu, packed_conversion, packed_atomic, dotprod,
+/// prmt, clc, extended_minmax and integer_minmax (127 decls).
+pub const packed_smoke = struct {
+    pub const signature = fn (src: [*]const u32, diag: [*]u32) void;
+};
+
 /// `mbar_smoke`: mbarrier with TMA removed, to find out which half is broken.
 pub const mbar_smoke = struct {
     pub const block = 128;
     pub const diag_words = 8;
     pub const signature = fn (diag: [*]u32) void;
+};
+
+/// `hgemm_tma` (S2 of the TMA line): the `hgemm_wgmma3` tile and pipeline
+/// shape with TMA loads, so the byte counts the kernel waits on and the boxes
+/// the host encodes are the same numbers, spelled once here. The host
+/// cross-checks them against `TensorMap.tileBytes()` of the descriptors it
+/// actually encoded — the expect_tx count written wrong does not fault, it
+/// deadlocks or releases early.
+pub const hgemm_tma = struct {
+    pub const tile_m = 64;
+    pub const tile_n = 128;
+    pub const k_slice = 16;
+    pub const threads = 128;
+    pub const stages = 3;
+
+    /// B arrives as one 8-column x 16-k-row sub-tile per wgmma n-block, each
+    /// 256 B landing at nb*256 — reproducing the core-matrix-packed layout the
+    /// wgmma descriptor path already reads. See hgemm_tma.zig for why a single
+    /// box over the whole k×n tile does not work.
+    pub const b_subtiles = tile_n / 8;
+    pub const a_tile_bytes = tile_m * k_slice * 2; // 2 KB, plain [64][16] f16
+    pub const b_subtile_bytes = 8 * k_slice * 2; // 256 B
+    pub const b_tile_bytes = b_subtile_bytes * b_subtiles; // 4 KB
+    /// What one pipeline stage delivers, and what arrive.expect_tx waits for.
+    pub const stage_bytes = a_tile_bytes + b_tile_bytes;
+
+    /// The two u64s are device addresses of the A and B `CUtensorMap`s. The
+    /// matrix pointers are unused on the device (the descriptors carry the
+    /// addresses) but document the binding and keep the harness symmetric.
+    pub const signature = fn (a: [*]const f16, b: [*]const f16, c: [*]f32, n: u32, desc_a: u64, desc_b: u64) void;
 };
 
 /// Geometry of the `tma_smoke` tile, shared because three separate things have to
@@ -74,4 +130,10 @@ pub const tma_smoke = struct {
     pub const signature = fn (out: [*]u8, diag: [*]u32, desc: u64, x: i32, y: i32) void;
     /// Stage markers, so a device-side failure reports where it stopped.
     pub const diag_words = 11;
+};
+
+pub const atomics_smoke = struct {
+    pub const signature = fn (src: [*]const i32, diag: [*]u32) void;
+    /// diag layout: see src/examples/atomics_smoke.zig.
+    pub const diag_words = 32;
 };

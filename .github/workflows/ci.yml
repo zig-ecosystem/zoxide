@@ -70,6 +70,21 @@ jobs:
           # .global format string.
           grep -q 'vprintf' debug_print.ptx
           grep -q '\.global' debug_print.ptx
+          # math_smoke: the fast tier of cuda.math (src/math.zig) must lower
+          # to the single PTX approx instructions libdevice's __nv_fast_*
+          # are built on, and the software tier must survive as ordinary
+          # arithmetic (no unresolved __nv_* or llvm.* calls).
+          grep -q 'sin\.approx\.f32' math_smoke.ptx
+          grep -q 'cos\.approx\.f32' math_smoke.ptx
+          grep -q 'lg2\.approx\.f32' math_smoke.ptx
+          grep -q 'ex2\.approx\.f32' math_smoke.ptx
+          grep -q 'tanh\.approx\.f32' math_smoke.ptx
+          grep -q 'rsqrt\.approx\.f32' math_smoke.ptx
+          grep -q 'sqrt\.rn\.f32' math_smoke.ptx
+          grep -q 'max\.f32' math_smoke.ptx
+          if grep -q '__nv_\|llvm\.' math_smoke.ptx; then
+            echo "math_smoke: unresolved external math call"; exit 1
+          fi
           # asm_smoke: asm-template bindings produce real registers
           # (no positional $N or %[ residue).
           grep -q 'abs\.bf16x2 %r' asm_smoke.ptx
@@ -143,6 +158,265 @@ jobs:
           decl=$(grep -n 'reg \.f32 %zacc' hgemm_wgmma4.ptx | head -1 | cut -d: -f1)
           first_use=$(grep -n '%zacc0' hgemm_wgmma4.ptx | head -1 | cut -d: -f1)
           [ "$decl" -le "$first_use" ] || { echo "hgemm_wgmma4: %zacc used before declaration"; exit 1; }
+          # cpasync_mbar_smoke: every generated cp.async / mbarrier / counted-barrier
+          # wrapper (6 families, 35 decls in src/gen) must reach PTX. The kernel is
+          # form-only — mbar_smoke covers semantics; this covers the bindings.
+          grep -q '\.target sm_90a' cpasync_mbar_smoke.ptx
+          # cp_async_copy: ca at 4/8/16, cg at 16, then the zfill variants with
+          # the extra src-size operand.
+          for sz in 4 8 16; do
+            grep -qE "cp\.async\.ca\.shared\.global \[.+\], \[.+\], $sz;" cpasync_mbar_smoke.ptx
+            grep -qE "cp\.async\.ca\.shared\.global \[.+\], \[.+\], $sz, $sz;" cpasync_mbar_smoke.ptx
+          done
+          grep -qE 'cp\.async\.cg\.shared\.global \[.+\], \[.+\], 16;' cpasync_mbar_smoke.ptx
+          grep -qE 'cp\.async\.cg\.shared\.global \[.+\], \[.+\], 16, 16;' cpasync_mbar_smoke.ptx
+          # cp_async_control.
+          grep -q 'cp\.async\.commit_group' cpasync_mbar_smoke.ptx
+          grep -qE 'cp\.async\.wait_group\s+0' cpasync_mbar_smoke.ptx
+          grep -q 'cp\.async\.wait_all' cpasync_mbar_smoke.ptx
+          # cp_async_mbarrier: shared-typed and generic forms, inc and noinc.
+          grep -q 'cp\.async\.mbarrier\.arrive\.shared\.b64' cpasync_mbar_smoke.ptx
+          grep -q 'cp\.async\.mbarrier\.arrive\.noinc\.shared\.b64' cpasync_mbar_smoke.ptx
+          grep -q 'cp\.async\.mbarrier\.arrive\.b64' cpasync_mbar_smoke.ptx
+          grep -q 'cp\.async\.mbarrier\.arrive\.noinc\.b64' cpasync_mbar_smoke.ptx
+          # mbarrier_basic.
+          grep -q 'mbarrier\.init\.shared\.b64' cpasync_mbar_smoke.ptx
+          grep -q 'mbarrier\.arrive\.shared\.b64' cpasync_mbar_smoke.ptx
+          grep -q 'mbarrier\.arrive\.noComplete\.shared\.b64' cpasync_mbar_smoke.ptx
+          grep -q 'mbarrier\.inval\.shared\.b64' cpasync_mbar_smoke.ptx
+          grep -q 'mbarrier\.test_wait\.shared\.b64' cpasync_mbar_smoke.ptx
+          # mbarrier_extended.
+          grep -q 'nanosleep\.u32' cpasync_mbar_smoke.ptx
+          grep -q 'mbarrier\.try_wait\.shared\.b64' cpasync_mbar_smoke.ptx
+          grep -q 'fence\.mbarrier_init\.release\.cluster' cpasync_mbar_smoke.ptx
+          grep -q 'mbarrier\.arrive\.expect_tx\.release\.cta\.shared::cta\.b64' cpasync_mbar_smoke.ptx
+          grep -q 'mbarrier\.arrive\.expect_tx\.relaxed\.cluster\.shared::cta\.b64' cpasync_mbar_smoke.ptx
+          grep -q 'fence\.proxy\.async::generic\.release\.sync_restrict::shared::cta\.cluster' cpasync_mbar_smoke.ptx
+          grep -q 'mbarrier\.try_wait\.parity\.shared::cta\.b64' cpasync_mbar_smoke.ptx
+          grep -q 'fence\.proxy\.async::generic\.acquire\.sync_restrict::shared::cluster\.cluster' cpasync_mbar_smoke.ptx
+          grep -q 'fence\.proxy\.async\.shared::cta' cpasync_mbar_smoke.ptx
+          grep -q 'mbarrier\.arrive\.release\.cluster\.shared::cluster\.b64' cpasync_mbar_smoke.ptx
+          grep -q 'mbarrier\.try_wait\.parity\.acquire\.cluster\.shared::cta\.b64' cpasync_mbar_smoke.ptx
+          # counted_barrier: LLVM names the aligned forms barrier.* and the
+          # plain ones bar.*.
+          grep -q 'barrier\.arrive' cpasync_mbar_smoke.ptx
+          grep -q 'barrier\.sync' cpasync_mbar_smoke.ptx
+          grep -q 'bar\.arrive' cpasync_mbar_smoke.ptx
+          grep -q 'bar\.sync' cpasync_mbar_smoke.ptx
+          # warpops_smoke: the generated warp-level wrappers (6 families, 38
+          # decls in src/gen; the two match.all forms are not reachable, see
+          # src/examples/warpops_smoke.zig) must reach PTX. Built for sm_100a
+          # because LLVM gates redux.sync.*.f32 on it. Form-only — warp_reduce
+          # covers shuffle semantics; this covers the bindings.
+          grep -q '\.target sm_100a' warpops_smoke.ptx
+          # redux: integer add/min/max (s32/u32) and and/or/xor, then the f32
+          # min/max in plain, abs, NaN and abs.NaN forms.
+          grep -q 'redux\.sync\.add\.s32' warpops_smoke.ptx
+          grep -q 'redux\.sync\.min\.s32' warpops_smoke.ptx
+          grep -q 'redux\.sync\.max\.s32' warpops_smoke.ptx
+          grep -q 'redux\.sync\.min\.u32' warpops_smoke.ptx
+          grep -q 'redux\.sync\.max\.u32' warpops_smoke.ptx
+          grep -q 'redux\.sync\.and\.b32' warpops_smoke.ptx
+          grep -q 'redux\.sync\.or\.b32' warpops_smoke.ptx
+          grep -q 'redux\.sync\.xor\.b32' warpops_smoke.ptx
+          grep -q 'redux\.sync\.min\.f32' warpops_smoke.ptx
+          grep -q 'redux\.sync\.max\.f32' warpops_smoke.ptx
+          grep -q 'redux\.sync\.min\.abs\.f32' warpops_smoke.ptx
+          grep -q 'redux\.sync\.max\.abs\.f32' warpops_smoke.ptx
+          grep -q 'redux\.sync\.min\.NaN\.f32' warpops_smoke.ptx
+          grep -q 'redux\.sync\.max\.NaN\.f32' warpops_smoke.ptx
+          grep -q 'redux\.sync\.min\.abs\.NaN\.f32' warpops_smoke.ptx
+          grep -q 'redux\.sync\.max\.abs\.NaN\.f32' warpops_smoke.ptx
+          # warp_match: the match.any forms at 32 and 64 bits.
+          grep -q 'match\.any\.sync\.b32' warpops_smoke.ptx
+          grep -q 'match\.any\.sync\.b64' warpops_smoke.ptx
+          # vote, active_mask, warp_barrier.
+          grep -q 'vote\.sync\.any' warpops_smoke.ptx
+          grep -q 'vote\.sync\.all' warpops_smoke.ptx
+          grep -q 'vote\.sync\.uni' warpops_smoke.ptx
+          grep -q 'vote\.sync\.ballot' warpops_smoke.ptx
+          grep -q 'activemask\.b32' warpops_smoke.ptx
+          grep -q 'bar\.warp\.sync' warpops_smoke.ptx
+          # warp_shuffle: every .sync form (the u64 asm wrappers split into two
+          # b32 shuffles, so the counts exceed the 8 NVVM calls).
+          for m in up down bfly idx; do
+            grep -q "shfl\.sync\.$m\.b32" warpops_smoke.ptx
+          done
+          # ldmatrix_smoke: all 18 generated ldmatrix wrappers (gen.matrix) plus
+          # the 4 stmatrix forms and the movmatrix asm wrapper must reach PTX.
+          # Built for sm_100a because the b8 / b8x16 ldmatrix variants are not
+          # selectable on sm_90a. The gen stmatrix wrappers never lower in Zig
+          # 0.16 (they reach PTX as an unresolved llvm.nvvm call), so stmatrix
+          # is emitted from hand-written inline asm in the example — see the
+          # header of src/examples/ldmatrix_smoke.zig. Form-only; hgemm_mma2
+          # covers ldmatrix semantics.
+          grep -q '\.target sm_100a' ldmatrix_smoke.ptx
+          # m8n8 b16: x1/x2/x4, plain and trans.
+          for v in x1 x2 x4; do
+            grep -q "ldmatrix\.sync\.aligned\.m8n8\.$v\.shared\.b16" ldmatrix_smoke.ptx
+            grep -q "ldmatrix\.sync\.aligned\.m8n8\.$v\.trans\.shared\.b16" ldmatrix_smoke.ptx
+          done
+          # m16n16 b8 and the b8x16 packed variants (6-bit p32 / 4-bit p64).
+          grep -q 'ldmatrix\.sync\.aligned\.m16n16\.x1\.trans\.shared\.b8' ldmatrix_smoke.ptx
+          grep -q 'ldmatrix\.sync\.aligned\.m16n16\.x2\.trans\.shared\.b8' ldmatrix_smoke.ptx
+          for pk in b6x16_p32 b4x16_p64; do
+            grep -q "ldmatrix\.sync\.aligned\.m16n16\.x1\.trans\.shared\.b8x16\.$pk" ldmatrix_smoke.ptx
+            grep -q "ldmatrix\.sync\.aligned\.m16n16\.x2\.trans\.shared\.b8x16\.$pk" ldmatrix_smoke.ptx
+            for v in x1 x2 x4; do
+              grep -q "ldmatrix\.sync\.aligned\.m8n16\.$v\.shared\.b8x16\.$pk" ldmatrix_smoke.ptx
+            done
+          done
+          # stmatrix (inline asm): x2/x4, plain and trans.
+          for v in x2 x4; do
+            grep -q "stmatrix\.sync\.aligned\.m8n8\.$v\.shared\.b16" ldmatrix_smoke.ptx
+            grep -q "stmatrix\.sync\.aligned\.m8n8\.$v\.trans\.shared\.b16" ldmatrix_smoke.ptx
+          done
+          grep -q 'movmatrix\.sync\.aligned\.m8n8\.trans\.b16' ldmatrix_smoke.ptx
+          # No unresolved NVVM calls may survive: every matrix op must be a real
+          # instruction, not a call to an llvm.nvvm.* symbol.
+          if grep -q 'llvm\.nvvm' ldmatrix_smoke.ptx; then
+            echo "ldmatrix_smoke: unresolved NVVM intrinsic call"; exit 1
+          fi
+          # atomics_smoke: the general atomics surface. atom.* comes from
+          # Zig's @atomicRmw/@cmpxchgStrong through the cuda.zig wrappers
+          # (the catalog has no plain atom.* entries); red.* is inline asm,
+          # because the LLVM NVPTX backend never selects the no-return
+          # reduction form even for a discarded result. Form-only —
+          # atomic_counter covers semantics.
+          grep -q 'atom\.global\.add\.u32' atomics_smoke.ptx
+          grep -q 'atom\.global\.add\.u64' atomics_smoke.ptx
+          grep -q 'atom\.global\.add\.f32' atomics_smoke.ptx
+          grep -q 'atom\.global\.add\.f64' atomics_smoke.ptx
+          grep -q 'atom\.global\.min\.u32' atomics_smoke.ptx
+          grep -q 'atom\.global\.max\.u32' atomics_smoke.ptx
+          grep -q 'atom\.global\.min\.s32' atomics_smoke.ptx
+          grep -q 'atom\.global\.max\.s32' atomics_smoke.ptx
+          grep -q 'atom\.global\.min\.u64' atomics_smoke.ptx
+          grep -q 'atom\.global\.max\.u64' atomics_smoke.ptx
+          grep -q 'atom\.global\.max\.s64' atomics_smoke.ptx
+          grep -q 'atom\.global\.and\.b32' atomics_smoke.ptx
+          grep -q 'atom\.global\.or\.b32' atomics_smoke.ptx
+          grep -q 'atom\.global\.xor\.b32' atomics_smoke.ptx
+          grep -q 'atom\.global\.exch\.b32' atomics_smoke.ptx
+          grep -q 'atom\.global\.exch\.b64' atomics_smoke.ptx
+          grep -qE 'atom\.[a-z.]*global\.cas\.b32' atomics_smoke.ptx
+          grep -q 'atom\.shared\.add\.u32' atomics_smoke.ptx
+          grep -q 'atom\.shared\.min\.u32' atomics_smoke.ptx
+          grep -q 'atom\.shared\.max\.s32' atomics_smoke.ptx
+          grep -q 'atom\.shared\.exch\.b32' atomics_smoke.ptx
+          for op in add.u32 min.u32 max.s32 and.b32 or.b32 xor.b32 inc.u32 dec.u32 add.f32; do
+            grep -q "red\.global\.$op" atomics_smoke.ptx
+          done
+          # packed_smoke: the generated packed-data bindings (8 families, 127
+          # decls in src/gen) must reach PTX. Built for sm_100a: the fp8 cvt
+          # intrinsics gate on sm_89+ and clusterlaunchcontrol on sm_90a+ in
+          # LLVM. The two gen.dotprod.dp2a_* wrappers have no NVPTX selection
+          # pattern in LLVM and are emitted from hand-written asm in the
+          # example. abs.bf16x2, mul.rn.f32x2 and prmt.b32.b4e already carry
+          # assertions under asm_smoke.ptx and are not repeated here. Form-only
+          # — f16_native covers f16x2 semantics; this covers the bindings.
+          grep -q '\.target sm_100a' packed_smoke.ptx
+          # packed_alu, f16x2 (13): arithmetic, min/max, fma modifier matrix.
+          for i in add.rn sub.rn mul.rn neg abs min max; do
+            grep -q "$i\.f16x2 " packed_smoke.ptx
+          done
+          for m in '' '.ftz' '.sat' '.ftz.sat' '.relu' '.ftz.relu'; do
+            grep -q "fma\.rn$m\.f16x2 " packed_smoke.ptx
+          done
+          # packed_alu, bf16x2 (9; abs covered by asm_smoke).
+          for i in add.rn sub.rn mul.rn neg min max; do
+            grep -q "$i\.bf16x2 " packed_smoke.ptx
+          done
+          grep -q 'fma\.rn\.bf16x2 ' packed_smoke.ptx
+          grep -q 'fma\.rn\.relu\.bf16x2 ' packed_smoke.ptx
+          # packed_alu, f32x2 (8; mul.rn covered by asm_smoke).
+          for i in add.rn add.rn.ftz sub.rn sub.rn.ftz mul.rn.ftz fma.rn fma.rn.ftz; do
+            grep -q "$i\.f32x2 " packed_smoke.ptx
+          done
+          # extended_minmax, f16 (16): min/max x {plain,ftz,NaN,ftz.NaN} x
+          # {plain,xorsign.abs}.
+          for op in min max; do
+            for m in '' '.ftz' '.NaN' '.ftz.NaN'; do
+              for x in '' '.xorsign.abs'; do
+                grep -q "$op$m$x\.f16 " packed_smoke.ptx
+              done
+            done
+          done
+          # extended_minmax, f16x2 (14): same matrix minus the plain forms
+          # (those are packed_alu).
+          for op in min max; do
+            for m in '' '.ftz' '.NaN' '.ftz.NaN'; do
+              for x in '' '.xorsign.abs'; do
+                [ -z "$m$x" ] && continue
+                grep -q "$op$m$x\.f16x2 " packed_smoke.ptx
+              done
+            done
+          done
+          # extended_minmax, bf16 (8) and bf16x2 (6): no ftz variants.
+          for op in min max; do
+            for m in '' '.NaN'; do
+              for x in '' '.xorsign.abs'; do
+                grep -q "$op$m$x\.bf16 " packed_smoke.ptx
+                [ -z "$m$x" ] && continue
+                grep -q "$op$m$x\.bf16x2 " packed_smoke.ptx
+              done
+            done
+          done
+          # extended_minmax, f32 (8): xorsign.abs forms only.
+          for op in min max; do
+            for m in '' '.ftz' '.NaN' '.ftz.NaN'; do
+              grep -q "$op$m\.xorsign\.abs\.f32 " packed_smoke.ptx
+            done
+          done
+          # integer_minmax (8).
+          grep -q 'min\.relu\.s32 ' packed_smoke.ptx
+          grep -q 'max\.relu\.s32 ' packed_smoke.ptx
+          for i in 'max\.s16x2' 'min\.s16x2' 'max\.u16x2' 'min\.u16x2' 'max\.relu\.s16x2' 'min\.relu\.s16x2'; do
+            grep -q "$i " packed_smoke.ptx
+          done
+          # packed_conversion (18): fp8<->f16x2, fp8<-f32, f32x2->f16x2/bf16x2.
+          for t in e4m3x2 e5m2x2; do
+            grep -q "cvt\.rn\.satfinite\.$t\.f32 " packed_smoke.ptx
+            grep -q "cvt\.rn\.satfinite\.relu\.$t\.f32 " packed_smoke.ptx
+            grep -q "cvt\.rn\.f16x2\.$t " packed_smoke.ptx
+            grep -q "cvt\.rn\.relu\.f16x2\.$t " packed_smoke.ptx
+            grep -q "cvt\.rn\.satfinite\.$t\.f16x2 " packed_smoke.ptx
+            grep -q "cvt\.rn\.satfinite\.relu\.$t\.f16x2 " packed_smoke.ptx
+          done
+          for i in 'cvt\.rn\.f16x2\.f32' 'cvt\.rz\.f16x2\.f32' 'cvt\.rn\.relu\.f16x2\.f32' \
+                   'cvt\.rn\.bf16x2\.f32' 'cvt\.rz\.bf16x2\.f32' 'cvt\.rn\.relu\.bf16x2\.f32'; do
+            grep -q "$i " packed_smoke.ptx
+          done
+          # packed_atomic (2).
+          grep -q 'atom\.global\.add\.noftz\.f16x2 ' packed_smoke.ptx
+          grep -q 'atom\.global\.add\.noftz\.bf16x2 ' packed_smoke.ptx
+          # dotprod (4): dp4a from NVVM, dp2a from the hand-written asm.
+          grep -q 'dp4a\.u32\.u32 ' packed_smoke.ptx
+          grep -q 'dp4a\.s32\.s32 ' packed_smoke.ptx
+          for t in u32 s32; do
+            for h in lo hi; do
+              grep -q "dp2a\.$h\.$t\.$t " packed_smoke.ptx
+            done
+          done
+          # prmt (7; b4e covered by asm_smoke).
+          grep -q 'prmt\.b32 ' packed_smoke.ptx
+          for m in f4e ecl rc8 ecr rc16; do
+            grep -q "prmt\.b32\.$m " packed_smoke.ptx
+          done
+          # clc (6).
+          grep -q 'clusterlaunchcontrol\.try_cancel\.async\.shared::cta\.mbarrier::complete_tx::bytes\.b128' packed_smoke.ptx
+          grep -q 'clusterlaunchcontrol\.try_cancel\.async\.shared::cta\.mbarrier::complete_tx::bytes\.multicast::cluster::all\.b128' packed_smoke.ptx
+          for a in x y z; do
+            grep -q "clusterlaunchcontrol\.query_cancel\.get_first_ctaid::$a\.b32\.b128" packed_smoke.ptx
+          done
+          grep -q 'clusterlaunchcontrol\.query_cancel\.is_canceled\.pred\.b128' packed_smoke.ptx
+          # No unresolved NVVM calls or unsubstituted asm operands may survive.
+          if grep -q 'llvm\.nvvm' packed_smoke.ptx; then
+            echo "packed_smoke: unresolved NVVM intrinsic call"; exit 1
+          fi
+          if grep -qE '\$[0-9]|%\[' packed_smoke.ptx; then
+            echo "packed_smoke: unsubstituted operand"; exit 1
+          fi
           echo "PTX invariants OK"
 
       - name: pod-verify degraded mode (no GPU runner)

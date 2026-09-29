@@ -8,6 +8,11 @@ pub const default_sm_model = &std.Target.nvptx.cpu.sm_90;
 // forward-compatible with later architectures (no PTX JIT to sm_100), which is
 // why it is opt-in per kernel instead of the project default.
 pub const sm_90a_model = &std.Target.nvptx.cpu.sm_90a;
+// Architecture-specific Blackwell target. `redux.sync.*.f32` (including the
+// abs/NaN forms) is gated on sm_100a in LLVM's NVPTX backend, so a kernel
+// exercising them must be built for sm_100a; like sm_90a this is opt-in per
+// kernel because such PTX cannot JIT back down to Hopper.
+pub const sm_100a_model = &std.Target.nvptx.cpu.sm_100a;
 
 pub const CudaOptions = struct {
     sm: *const std.Target.Cpu.Model = default_sm_model,
@@ -173,6 +178,7 @@ pub fn build(b: *std.Build) void {
         .{ .name = "sgemm_opt2" },
         .{ .name = "sgemm_swz" },
         .{ .name = "debug_print" },
+        .{ .name = "math_smoke" },
         .{ .name = "asm_smoke" },
         .{ .name = "hgemm_mma" },
         .{ .name = "hgemm_mma2" },
@@ -181,12 +187,18 @@ pub fn build(b: *std.Build) void {
         .{ .name = "hgemm_wgmma2", .sm = sm_90a_model },
         .{ .name = "hgemm_wgmma3", .sm = sm_90a_model },
         .{ .name = "hgemm_wgmma4", .sm = sm_90a_model },
+        .{ .name = "hgemm_tma", .sm = sm_90a_model },
         .{ .name = "f16_native" },
         .{ .name = "dev_global" },
         .{ .name = "const_bank" },
         .{ .name = "const_vs_ldg" },
         .{ .name = "mbar_smoke", .sm = sm_90a_model },
         .{ .name = "tma_smoke", .sm = sm_90a_model },
+        .{ .name = "cpasync_mbar_smoke", .sm = sm_90a_model },
+        .{ .name = "ldmatrix_smoke", .sm = sm_100a_model },
+        .{ .name = "warpops_smoke", .sm = sm_100a_model },
+        .{ .name = "atomics_smoke" },
+        .{ .name = "packed_smoke", .sm = sm_100a_model },
     };
 
     // `zig build kernels`: compile every kernel in src/examples/ to

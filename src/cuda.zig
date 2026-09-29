@@ -28,6 +28,10 @@ pub const wgmma = @import("wgmma.zig");
 /// TMA: descriptor-driven bulk tensor copies. See src/tma.zig for why the g2s
 /// direction is hand-written asm.
 pub const tma = @import("tma.zig");
+/// Scalar math (the libdevice counterpart): fast PTX-approx wrappers plus
+/// Zig implementations of the transcendentals LLVM has no libcall for on
+/// nvptx. See docs/libdevice-path.md.
+pub const math = @import("math.zig");
 /// Compile-time kernel signature agreement with the host side. Use
 /// `abi.assertMatches(shared_decl, @TypeOf(my_kernel))` so that changing a
 /// kernel's parameters without updating the host is a compile error here.
@@ -448,13 +452,73 @@ fn shfl(comptime kind: anytype, comptime T: type, mask: u32, val: T, off: i32, p
     };
 }
 
-/// atomicAdd on global or shared memory. T must be u32, u64 or f32.
+/// atomicAdd on global or shared memory. T must be u32, u64, f32 or f64.
 /// Lowers to a single `atom.*.add.*` PTX instruction via Zig's @atomicRmw
-/// (no NVVM intrinsic needed).
+/// (no NVVM intrinsic needed). f64 add requires sm_60+.
 pub fn atomicAdd(comptime T: type, ptr: anytype, val: T) T {
     return switch (T) {
-        u32, u64, f32 => @atomicRmw(T, ptr, .Add, val, .monotonic),
-        else => @compileError("atomicAdd only supports u32/u64/f32, got " ++ @typeName(T)),
+        u32, u64, f32, f64 => @atomicRmw(T, ptr, .Add, val, .monotonic),
+        else => @compileError("atomicAdd only supports u32/u64/f32/f64, got " ++ @typeName(T)),
+    };
+}
+
+/// atomicMin / atomicMax on global or shared memory. T must be a 32- or
+/// 64-bit integer. Lower to `atom.*.{min,max}.{s32,u32,s64,u64}` via
+/// Zig's @atomicRmw.
+pub fn atomicMin(comptime T: type, ptr: anytype, val: T) T {
+    return switch (T) {
+        i32, u32, i64, u64 => @atomicRmw(T, ptr, .Min, val, .monotonic),
+        else => @compileError("atomicMin only supports i32/u32/i64/u64, got " ++ @typeName(T)),
+    };
+}
+
+pub fn atomicMax(comptime T: type, ptr: anytype, val: T) T {
+    return switch (T) {
+        i32, u32, i64, u64 => @atomicRmw(T, ptr, .Max, val, .monotonic),
+        else => @compileError("atomicMax only supports i32/u32/i64/u64, got " ++ @typeName(T)),
+    };
+}
+
+/// Bitwise atomics on global or shared memory. Lower to
+/// `atom.*.{and,or,xor}.b{32,64}` via Zig's @atomicRmw.
+pub fn atomicAnd(comptime T: type, ptr: anytype, val: T) T {
+    return switch (T) {
+        u32, u64 => @atomicRmw(T, ptr, .And, val, .monotonic),
+        else => @compileError("atomicAnd only supports u32/u64, got " ++ @typeName(T)),
+    };
+}
+
+pub fn atomicOr(comptime T: type, ptr: anytype, val: T) T {
+    return switch (T) {
+        u32, u64 => @atomicRmw(T, ptr, .Or, val, .monotonic),
+        else => @compileError("atomicOr only supports u32/u64, got " ++ @typeName(T)),
+    };
+}
+
+pub fn atomicXor(comptime T: type, ptr: anytype, val: T) T {
+    return switch (T) {
+        u32, u64 => @atomicRmw(T, ptr, .Xor, val, .monotonic),
+        else => @compileError("atomicXor only supports u32/u64, got " ++ @typeName(T)),
+    };
+}
+
+/// atomicExch on global or shared memory. T must be u32 or u64.
+/// Lowers to `atom.*.exch.b{32,64}` via Zig's @atomicRmw.
+pub fn atomicExch(comptime T: type, ptr: anytype, val: T) T {
+    return switch (T) {
+        u32, u64 => @atomicRmw(T, ptr, .Xchg, val, .monotonic),
+        else => @compileError("atomicExch only supports u32/u64, got " ++ @typeName(T)),
+    };
+}
+
+/// Compare-and-swap on global or shared memory. T must be u32 or u64.
+/// Lowers to `atom.*.cas.b{32,64}` via Zig's @cmpxchgStrong. Returns null
+/// on success, or the value found in memory on failure (Zig's cmpxchg
+/// convention).
+pub fn atomicCas(comptime T: type, ptr: anytype, expected: T, desired: T) ?T {
+    return switch (T) {
+        u32, u64 => @cmpxchgStrong(T, ptr, expected, desired, .monotonic, .monotonic),
+        else => @compileError("atomicCas only supports u32/u64, got " ++ @typeName(T)),
     };
 }
 
