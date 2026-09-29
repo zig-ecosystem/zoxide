@@ -154,10 +154,12 @@ NVIDIA PTX ISA documentation data, Apache-2.0.
 
 Current coverage: 329 intrinsic wrappers (`src/gen/intrinsics.zig`) + 618
 asm-template wrappers (`src/gen/instrinsics_asm.zig`, LLVM positional `$N`
-templates rewritten to zig named operands `%[name]`). Unmapped: 163 entries,
-mostly asm probes exceeding zig's inline-asm operand cap (max 15 outputs /
-31 inputs — tcgen05.ld and friends) plus no-probe entries (raw sreg reads,
-see cuda.zig for the common ones).
+templates rewritten to zig named operands `%[name]`). By catalog `id` match
+that is **943 of 1025 entries** (2026-09-25 recount); the missing 82 —
+tcgen05 (71), TMA g2s family (10), wgmma_control (1) — are all asm probes
+exceeding zig's inline-asm operand cap (max 15 outputs / 31 inputs), not
+unmapped work. No-probe entries (raw sreg reads) are hand-covered in
+cuda.zig.
 
 Generated bindings are re-exported as `cuda.gen` (intrinsics) and
 `cuda.asm_gen` (asm-derived) — e.g. `cuda.gen.warp.ballot_sync(mask, pred)`,
