@@ -54,6 +54,10 @@
 前提:P0 的 TMA 结论**已出且为否**(H1 不成立,见 tma-plan.md S2)——TMA 对 hgemm 吞吐的动机已被数据否定,P2 的 TMA 项动机只剩"能力完整性",优先级确认下调;TMA s2g/multicast 如无外部需求可继续挂起。
 
 - [ ] **TMA s2g + multicast**:s2g wrapper 已有生成物,补 smoke 验证;multicast 依赖 cluster(tma-plan.md 已注明 cluster 不排期),multicast 随之挂起,除非届时有集群硬件需求。
+  - **tma 缺失条目逐条结论**(2026-09-29,对 upstream HEAD catalog 1029 条;注意上游从 1025 涨到 1029,新增的是 cache_hint 变体):缺失 13 条 = g2s 7 + prefetch 6。
+    - g2s 7 条(1d/2d/3d/4d/5d + 2d multicast×2):LLVM 无 g2s 方向 intrinsic,生成器无产出(tma-plan S0 已记);其中 2d/3d 已在 `src/tma.zig` 手写 asm 覆盖,1d/4d/5d 同模板可即时补齐;multicast 2 条随 cluster 挂起。
+    - prefetch 6 条(1d_l2、5d_l2、gather4_2d_l2、2d/3d/4d 的 cache_hint):fire-and-forget,无 mbarrier 依赖,是 13 条里成本最低的一批;NVVM 已暴露部分非 cache_hint 形式(2d/4d_l2 已生成),补法 = 生成器补 cache_hint 维度或手写 6 条 asm。
+  - 同次普查的附带订正:packed_atomic 缺 2 条是**误报**(`packed_atomic_add_{f16x2,bf16x2}` 已生成为 `atom_add_{f16x2,bf16x2}`,fn 名 ≠ catalog id);`wgmma_wait_group` 缺 1 条同理(手写在 `src/wgmma.zig`);sparse_mma 缺 4 条为 fp8(e4m3/e5m2)m16n8k64 非 ordered_metadata 形,归 P2 sparse mma 条目;sreg 12 条为无 probe 的原始寄存器读,常用项已手写在 cuda.zig。
 - [ ] **mma 形状扩展**:bf16、int8/int4、fp8/f6/f4 的 mma.sync 形状。依赖 P1b(ldmatrix)与 P1d(packed/cvt)。每个形状 = 一个 bench 变体进 hgemm 家族,沿用现有"精确结果 + 峰值占比"口径。
 - [ ] **sparse mma**:catalog 有条目,等 P2 mma 基建成熟后按同一模式生成。
 - [ ] **tcgen05(Blackwell)**:仅当拿到 sm_100 真机才排期。`.reg` 绕法已验证可行,但 spill 代价数据(wgmma4 首跑会产出)决定这条路值不值得走。当前标注 blocked-on-hardware。
