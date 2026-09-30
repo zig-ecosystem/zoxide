@@ -83,15 +83,15 @@
 按对"v1.0 敢不敢承诺 API 冻结"的贡献排序:
 
 - [x] **PTX parse/lint**(对标 ptx-parse):无损文本视图,先在内部消费——bench 报告直接解析 ptxas 输出而非正则,upstream-asm-output-limit 类分析自动化。(2026-09-30 第一刀落地:`src/ptx.zig` 语句级无损视图 + `zoxide lint` / `--census`,CI 全量 lint,8 个单测含 38 份 kernel PTX 往返。范围修正:bench 资源占用读的是 driver attr,本无正则可换,首个内部消费者改为 census;操作数保持 span,无完整文法。)
-- [ ] **差分验证**:对标 fuzzer 的最小形态——同一 kernel 的 Zig 产 PTX 与 nvcc 参考实现做数值对拍,接入 pod-verify;竞态扰动(ptx-schedule 对应物:插 nanosleep 暴露同步 bug)列为候选,视 mbarrier/cluster 使用密度决定。
+- [ ] **差分验证**:对标 fuzzer 的最小形态——同一 kernel 的 Zig 产 PTX 与 nvcc 参考实现做数值对拍,接入 pod-verify;竞态扰动(ptx-schedule 对应物:插 nanosleep 暴露同步 bug)列为候选,视 mbarrier/cluster 使用密度决定。**blocked-on-hardware**:需要 nvcc(CUDA 工具链)+ GPU 做数值对拍,本机两者皆无;不做无硬件的空壳 harness。
 - [x] **`zoxide sanitize` / `zoxide debug` 子命令**:封装 compute-sanitizer / cuda-gdb,doctor 分级模式照搬。(2026-09-30 落地,`src/toolwrap.zig` 两个子命令共享一条 probe+exec 路径:probe 顺序 PATH → $CUDA_HOME/bin → /usr/local/cuda/bin,与 ptxas 同源(findPtxas 已重构为调用共享 probe);参数逐字透传,`--` 可选;exec 用 `std.process.replace`,exit code 即工具的,cuda-gdb 保持交互。缺席行为照搬 cubin(报错点名探测位置,exit 1)而非 doctor 的 warn——子命令的全部职责就是这个工具。范围说明:未做"缺省命令推导"之类的糖。验证:probe 顺序与 argv 组装 4 个单测;exec 路径用假 binary 验证(找到、透传、exit 42 透传);真工具本机不存在,真实 exec 未验证。)
 - [x] **artifact 嵌入 host 二进制**(对标 `#[cuda_module]` 的 oxide-artifacts):消除对外挂 .ptx 文件路径的依赖,是"下游包分发"形态的前提。(2026-09-30 落地。差距分析:下游包形态本已由 `@embedFile("kernel_ptx")` + `moduleFromPtx` 覆盖(tests/downstream);真正缺口在 **CLI 自身**——run/bench/lint 只收文件路径,pod 部署须带 kernels/ 目录。落地:`-Dembed-kernels`(默认开;38 个 kernel 共 ~700KB PTX,二进制 +0.7MB),build.zig 生成 `embedded_kernels` 注册表模块(匿名 import 各 kernel 的 emitted asm),CLI 解析顺序 = 存在的显式路径 > 裸 stem 命中内嵌表 > 报错并列出可用 stem;带路径分隔符的输入永不回退内嵌(打错路径不能静默跑别的 kernel)。内嵌 PTX 落到 /tmp 临时文件复用既有 ptxas 流水线,stem 保留为 basename 以便 run/bench 的 kernel 匹配。验证:无 kernels/ 目录下 `run vector_add` 抵达 ptxas 阶段(而非 file-not-found)、`bench hgemm_bf16`/`lint vector_add` 同;临时文件用后清除。)
-- [ ] **async 运行时**(对标 cutile-rs cuda-async):惰性 DeviceOperation + `.sync()`。注意 cuda-oxide 本体已不含这部分(迁去 cutile-rs),对标边界以 crates.io 0.3.1 为准。
+- [x] **async 运行时**(对标 cutile-rs cuda-async):惰性 DeviceOperation + `.sync()`。注意 cuda-oxide 本体已不含这部分(迁去 cutile-rs),对标边界以 crates.io 0.3.1 为准。(2026-09-30 落地为 `src/async.zig`(宿主侧 `gpu.async_ops`):**刻意做薄**——Operation = (stream, payload, runFn) 值,Builder 收集入 arena,`.sync()` = 按序 issue + 每条流 sync 一次;无 futures/DAG/调度器。**未做跨流等待**:`cuStreamWaitEvent` 绑定尚不存在,跨流依赖不能用 sync 造假,留待补绑定(需真机验证)。eager API 不变,单流代码应继续用它。测试 4 个(构造顺序/流归属、custom seam 的运行顺序与错误即停、launch payload 在 arena 中的存活、元素类型保持);真实执行路径挂起至 GPU。)
 - [x] **`launch_bounds` 等价物**(对标 `#[launch_bounds]`/`#[launch_contract]`):把 bench 的 `--maxrregcount` 从 CLI 参数下沉为 kernel 签名上的 comptime 属性,与类型化 launch 校验合并。(2026-09-30 落地。
   - **机制实验**(命令:`zig build-lib scratch.zig -target nvptx64-cuda -mcpu sm_90 -femit-asm`):Zig 无任何函数属性可达 PTX(grep std 无 maxntid/maxnreg);但 kernel 体内的 `asm volatile` 原样进 `.entry` body——`.maxntid 128;`/`.maxnreg 64;` 实测落入 body,位于 ld.param 前导之后、计算指令之前(合法位置;ptxas 接受性属真机挂起项)。module-scope asm 不可行(`.maxntid` 在 `.entry` 外不合法)。
   - 落地:`kernel_abi.LaunchBounds`(max_threads / min_blocks_per_sm / max_registers / grid_multiple_of)+ 结构化读取(abi 模块声明普通字段即可,不 import kernel_abi——避免同一文件进两个 module 的编译冲突,此坑实测踩过);设备侧 `cuda.launchBounds(...)`(freestanding,自带 comptime itoa);宿主侧 `Module.kernel` 接受 WithBounds 形,`checkGeometry` 违例时报"declared launch bound"。示范:`hgemm_bf16`(max_threads=128),CI 断言 `.maxntid 128;` 且位于 `.entry` 之后。`--maxrregcount` CLI 保留为 ptxas 期实验旋钮。
   - 未做:minnctapersm 无宿主侧校验(occupancy 是驱动实测,声明值只进 PTX);ptxas 对指令位置的接受性待真机。)
-- [ ] **arch 矩阵扩展真机验证**:当前仅 sm_90/H20;v1.0 前至少再覆盖一档(sm_80 或 sm_100,视可及硬件)。
+- [ ] **arch 矩阵扩展真机验证**:当前仅 sm_90/H20;v1.0 前至少再覆盖一档(sm_80 或 sm_100,视可及硬件)。**blocked-on-hardware**:需要非 sm_90 硬件;本机(无 GPU)与 pod(H20)都不满足,无可替代的部分验证路径。
 
 ## 明确不做 / 挂起
 
