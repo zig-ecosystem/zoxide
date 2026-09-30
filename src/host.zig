@@ -619,3 +619,8 @@ test "kernel_abi is re-exported for the shared-declaration pattern" {
     const Declared = fn ([*]const f32, u32) void;
     abi.assertMatches(Declared, Declared);
 }
+
+test {
+    // The PTX text-view module's tests live in src/ptx.zig.
+    std.testing.refAllDecls(@import("ptx.zig"));
+}

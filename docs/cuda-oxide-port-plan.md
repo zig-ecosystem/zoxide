@@ -82,7 +82,7 @@
 
 按对"v1.0 敢不敢承诺 API 冻结"的贡献排序:
 
-- [ ] **PTX parse/lint**(对标 ptx-parse):无损文本视图,先在内部消费——bench 报告直接解析 ptxas 输出而非正则,upstream-asm-output-limit 类分析自动化。
+- [x] **PTX parse/lint**(对标 ptx-parse):无损文本视图,先在内部消费——bench 报告直接解析 ptxas 输出而非正则,upstream-asm-output-limit 类分析自动化。(2026-09-30 第一刀落地:`src/ptx.zig` 语句级无损视图 + `zoxide lint` / `--census`,CI 全量 lint,8 个单测含 38 份 kernel PTX 往返。范围修正:bench 资源占用读的是 driver attr,本无正则可换,首个内部消费者改为 census;操作数保持 span,无完整文法。)
 - [ ] **差分验证**:对标 fuzzer 的最小形态——同一 kernel 的 Zig 产 PTX 与 nvcc 参考实现做数值对拍,接入 pod-verify;竞态扰动(ptx-schedule 对应物:插 nanosleep 暴露同步 bug)列为候选,视 mbarrier/cluster 使用密度决定。
 - [ ] **`zoxide sanitize` / `zoxide debug` 子命令**:封装 compute-sanitizer / cuda-gdb,doctor 分级模式照搬。
 - [ ] **artifact 嵌入 host 二进制**(对标 `#[cuda_module]` 的 oxide-artifacts):消除对外挂 .ptx 文件路径的依赖,是"下游包分发"形态的前提。

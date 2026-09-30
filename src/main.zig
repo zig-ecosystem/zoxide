@@ -3,6 +3,7 @@ const run_cmd = @import("run.zig");
 const scaffold = @import("scaffold.zig");
 const bench_cmd = @import("bench.zig");
 const gen_cmd = @import("gen.zig");
+const ptx = @import("ptx.zig");
 
 /// Baseline GPU: NVIDIA H20 (Hopper, compute capability 9.0).
 const default_sm = "sm_90";
@@ -51,6 +52,11 @@ pub fn main(init: std.process.Init) !u8 {
         return gen_cmd.genMain(gpa, io, args[2..], &w.interface);
     } else if (std.mem.eql(u8, cmd, "bench")) {
         return cmdBench(gpa, io, init.environ_map, args[2..]);
+    } else if (std.mem.eql(u8, cmd, "lint")) {
+        var buf: [8192]u8 = undefined;
+        var w = std.Io.File.stdout().writerStreaming(io, &buf);
+        defer w.interface.flush() catch {};
+        return cmdLint(gpa, io, args[2..], &w.interface);
     } else if (std.mem.eql(u8, cmd, "new")) {
         return cmdNew(gpa, io, init.environ_map, args[2..]);
     } else if (std.mem.eql(u8, cmd, "help") or std.mem.eql(u8, cmd, "--help") or std.mem.eql(u8, cmd, "-h")) {
@@ -73,6 +79,8 @@ fn usage() void {
         \\  zoxide doctor [--arch sm_XX]                          probe zig / nvptx / ptxas / libNVVM / GPU
         \\  zoxide run <example.ptx|.cubin> [--kernel name] [--n N] [--grid G --block B] [--arch sm_XX]
         \\                                                       run an example kernel on the GPU and verify results
+        \\  zoxide lint <file.ptx> [--census]                   lint PTX (structure + known-bad patterns);
+        \\                                                       --census prints the instruction census instead
         \\  supported arch values: {s}
         \\
     , .{ default_sm, default_sm, "sm_75 sm_80 sm_86 sm_89 sm_90 sm_90a sm_100 sm_120" });
@@ -141,6 +149,112 @@ fn cmdPtx(gpa: std.mem.Allocator, io: std.Io, args: []const [:0]const u8) !u8 {
     }
 
     std.debug.print("wrote PTX: {s}\n", .{parsed.output});
+    return 0;
+}
+
+/// `zoxide lint <file.ptx> [--census]` — structural lint over the lossless
+/// text view in src/ptx.zig, or an instruction census with --census.
+///
+/// Exit 1 on any finding. This is the internal consumer the module was
+/// built for: the checks are the ones this repository has been burned by
+/// (positional-asm residue, debug targets, instructions outside a body),
+/// and the census replaces the hand-grep counting behind the
+/// upstream-asm-output-limit and tma-plan analyses.
+fn cmdLint(gpa: std.mem.Allocator, io: std.Io, args: []const [:0]const u8, out: *std.Io.Writer) !u8 {
+    var positional: ?[]const u8 = null;
+    var census_mode = false;
+    for (args) |a| {
+        if (std.mem.eql(u8, a, "--census")) {
+            census_mode = true;
+        } else if (std.mem.eql(u8, a, "--help") or std.mem.eql(u8, a, "-h")) {
+            try out.print(
+                \\usage: zoxide lint <file.ptx> [--census]
+                \\  lint: structure (braces, body placement, .target) and known-bad
+                \\        patterns (unsubstituted $N / %[name] asm operands, debug
+                \\        target). Exit 1 on any finding.
+                \\  --census: print the instruction census, count by
+                \\        mnemonic+modifiers, descending.
+                \\
+            , .{});
+            return 0;
+        } else if (positional == null) {
+            positional = a;
+        } else {
+            std.debug.print("error: unexpected argument '{s}'\n", .{a});
+            return 1;
+        }
+    }
+    const path = positional orelse {
+        std.debug.print("error: expected 'zoxide lint <file.ptx> [--census]'\n", .{});
+        return 1;
+    };
+    const src = std.Io.Dir.cwd().readFileAlloc(io, path, gpa, .unlimited) catch |e| {
+        std.debug.print("error: cannot read '{s}': {s}\n", .{ path, @errorName(e) });
+        return 1;
+    };
+    defer gpa.free(src);
+
+    const doc = ptx.parse(gpa, src) catch |e| {
+        std.debug.print("error: parse failed on '{s}': {s}\n", .{ path, @errorName(e) });
+        return 1;
+    };
+    defer {
+        for (doc.stmts) |s| gpa.free(s.modifiers);
+        gpa.free(doc.stmts);
+    }
+    if (!doc.roundTrips()) {
+        // The lossless contract is asserted, not assumed: a parse that drops
+        // bytes would make every lint position after it misleading.
+        std.debug.print("error: internal: parse of '{s}' is not lossless\n", .{path});
+        return 1;
+    }
+
+    if (census_mode) {
+        var map = doc.census(gpa) catch |e| {
+            std.debug.print("error: census failed: {s}\n", .{@errorName(e)});
+            return 1;
+        };
+        defer {
+            var it = map.iterator();
+            while (it.next()) |e| gpa.free(e.key_ptr.*);
+            map.deinit();
+        }
+        const Entry = struct { key: []const u8, count: u32 };
+        var entries = std.array_list.Managed(Entry).init(gpa);
+        defer entries.deinit();
+        var it = map.iterator();
+        while (it.next()) |e| try entries.append(.{ .key = e.key_ptr.*, .count = e.value_ptr.* });
+        std.mem.sort(Entry, entries.items, {}, struct {
+            fn lt(_: void, a: Entry, b: Entry) bool {
+                if (a.count != b.count) return a.count > b.count;
+                return std.mem.order(u8, a.key, b.key) == .lt;
+            }
+        }.lt);
+        try out.print("census: {s} ({d} instruction statements, {d} classes)\n", .{ path, blk: {
+            var t: u32 = 0;
+            for (entries.items) |e| t += e.count;
+            break :blk t;
+        }, entries.items.len });
+        for (entries.items) |e| try out.print("  {d: >6}  {s}\n", .{ e.count, e.key });
+        return 0;
+    }
+
+    const findings = ptx.lint(gpa, doc) catch |e| {
+        std.debug.print("error: lint failed: {s}\n", .{@errorName(e)});
+        return 1;
+    };
+    defer gpa.free(findings);
+    if (findings.len != 0) {
+        for (findings) |f| {
+            if (f.line != 0)
+                try out.print("{s}:{d}: {s}\n", .{ path, f.line, f.msg })
+            else
+                try out.print("{s}: {s}\n", .{ path, f.msg });
+        }
+        try out.print("FAIL: {s}: {d} finding(s)\n", .{ path, findings.len });
+        return 1;
+    }
+    try out.print("PASS: {s}: {d} statements, structure clean\n", .{ path, doc.stmts.len });
     return 0;
 }
 

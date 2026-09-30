@@ -66,7 +66,18 @@ zig build kernel    # single default kernel -> zig-out/kernels/kernel.ptx (kept 
 zig-out/bin/zoxide doctor [--arch sm_90]                       # probe toolchain + GPU
 zig-out/bin/zoxide ptx src/kernel.zig -o out.ptx [--arch sm_90]  # Zig source -> PTX
 zig-out/bin/zoxide cubin out.ptx -o out.cubin [--arch sm_90]     # PTX -> cubin (needs ptxas)
+zig-out/bin/zoxide lint out.ptx [--census]                        # PTX lint / instruction census
 ```
+
+`zoxide lint` is a lossless PTX text view (`src/ptx.zig`) consumed as a
+checker: it verifies structure (balanced braces, instructions inside an
+`.entry`/`.func` body, `.target` present) and the known-bad patterns this
+repo has been burned by (unsubstituted `$N` / `%[name]` asm operands — ptxas
+rejects those one compile later; a `debug` flag on `.target`). Operands stay
+source spans — there is no expression grammar, deliberately. `--census`
+prints the instruction count by mnemonic+modifiers, which automates the
+hand-grep analysis behind `docs/upstream-asm-output-limit.md` and the TMA
+address-arithmetic accounting in `src/tma.zig`. CI lints every kernel PTX.
 
 Supported arch values: `sm_75 sm_80 sm_86 sm_89 sm_90 sm_100 sm_120`
 (default `sm_90` everywhere).

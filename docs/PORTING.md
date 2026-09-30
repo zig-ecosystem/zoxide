@@ -103,7 +103,7 @@ kernel.zig → PTX（NVPTX 后端）→ ptxas 编排 → doctor。**结论：路
 ### M4 —— 健壮性与生态（持续）
 
 1. 正确性回归套件（参考 cuda-oxide 记录的陷阱：barrier 分歧、mem2reg、循环展开）
-2. PTX 解析/检查器（对标 ptx-parse，可用于 lint 与测试断言）
+2. PTX 解析/检查器（对标 ptx-parse，可用于 lint 与测试断言）——**已落地第一刀**：`src/ptx.zig` 无损文本视图（语句级 span，往返逐字节一致，38 个 kernel PTX 全量回归）+ `zoxide lint [--census]`。未做：完整表达式文法（操作数保持文本 span）、类型/ISA 校验、对标 ptx-parse 的完整 AST。内部消费口径有修正：bench 的资源占用早已走 driver attr 而非正则解析 ptxas 输出，故首个内部消费者改为 census（地址运算统计类分析的自动化）。
 3. sm_90/sm_100/sm_120 特性逐项验证，维护 arch 能力矩阵
 4. 文档 + 示例 + 包发布（Zig package manager）
 
