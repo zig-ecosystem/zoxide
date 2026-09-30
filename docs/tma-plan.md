@@ -91,12 +91,16 @@ TMA 把地址生成搬进硬件:`cp.async.bulk.tensor` 只吃一个描述符指�
 
 ### S0 — 前提:host 侧描述符 + device 侧 g2s(无 GPU 可完成)
 
+> **状态注记(2026-09-30)**:下文「g2s 一条都没有」是 2026-09-25 的历史。g2s
+> 1d–5d 现已在 `src/tma.zig` 手写 asm 覆盖(a852cc5),prefetch 家族同日补齐
+> (f262850,含手写 gather4)。叙述保留原样以存取证过程。
+
 **订正**:本文初稿写「device 侧 wrapper 齐备,`cp_async_bulk_tensor` 138 条」。
 那是错的——我数了前缀匹配却没看**方向**。138 条全是 `s2g`(shared→global)和
 `reduce_*`。GEMM 需要的 `g2s`(global→shared)**一条都没有**:
 
 ```
-$ grep -c g2s src/gen/intrinsics.zig src/gen/instrinsics_asm.zig
+$ grep -c g2s src/gen/intrinsics.zig src/gen/intrinsics_asm.zig
 0
 0
 ```

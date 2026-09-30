@@ -18,5 +18,10 @@ ptxas 12.8, x86_64 Linux pod (no zig on pod; binary cross-built with
 Note: `atomic_counter` initially deadlocked the GPU because LLVM duplicated
 `bar.sync` onto divergent program points (conditional write before the
 barrier). Fixed by restructuring the kernel (unconditional same-value
-write); see README "known issues". The bar.sync single-point check is now
+write); see README "Notes on the kernel". The bar.sync single-point check is now
 enforced in CI.
+
+Dated reports live in `docs/verification/`; the 2026-09-24 dev_global /
+const_bank evidence rides the scratch tags `devglobal-20260924` /
+`constmem-20260924` (and their `constbench-*` siblings), whose tag messages
+and commits carry the run output.
