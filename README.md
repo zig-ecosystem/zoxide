@@ -565,6 +565,28 @@ try ctx.downloadAsync(hy.items, dy, stream);
 try stream.sync();
 ```
 
+When the *description* of the work and its execution live in different
+places — a helper that builds a pipeline, or several streams whose ops you
+want issued before any sync point — there is a deferred layer in
+`src/async.zig` (operations as values, one sync call):
+
+```zig
+var arena = std.heap.ArenaAllocator.init(gpa);
+defer arena.deinit(); // after the sync: the arena owns the ops' payloads
+var ops = gpu.async_ops.Builder.init(arena.allocator());
+
+_ = try ops.upload(s1, da, a_slice);     // s1: A in
+_ = try ops.upload(s2, db, b_slice);     // s2: B in, overlaps s1
+_ = try ops.launch(Decl, kern, s1, grid, block, .{ da, db, dc, n });
+_ = try ops.download(s1, c_slice, dc);
+try ops.sync(&ctx); // issue all in order, then sync each stream used
+```
+
+It is deliberately thin: same-stream ordering is the hardware's, and there
+is no cross-stream wait (`cuStreamWaitEvent` is not bound yet), so the
+launch above must share s1 with the upload it depends on. Single-stream
+code should keep using the eager calls — they are the same calls.
+
 `ctx.zero(buf)` and `ctx.fillBytes(buf, v)` are device-side `cuMemsetD8`; an
 earlier version allocated a host buffer of zeros and transferred it.
 

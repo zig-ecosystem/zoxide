@@ -38,6 +38,9 @@
 const std = @import("std");
 const cu = @import("cuda_driver.zig");
 pub const abi = @import("kernel_abi.zig");
+/// Deferred operations (operations as values + one sync point) over the
+/// stream API below. See the module doc comment for what it does not do.
+pub const async_ops = @import("async.zig");
 
 /// Driver errors, plus the checks this layer adds on top.
 pub const Error = cu.Error || error{
@@ -694,4 +697,9 @@ test "declared launch bounds are validated and name the contract" {
 test {
     // Embedded-kernel registry lookup (stem normalization).
     std.testing.refAllDecls(@import("embedded.zig"));
+}
+
+test {
+    // Deferred-operations layer over the stream API.
+    std.testing.refAllDecls(@import("async.zig"));
 }
