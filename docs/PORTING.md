@@ -77,15 +77,15 @@ kernel.zig → PTX（NVPTX 后端）→ ptxas 编排 → doctor。**结论：路
 2. 共享内存支持验证 ✅——容器级 `var tile: [N]f32 addrspace(.shared)` 原生可行，PTX 出现 `.shared` 段与 `ld/st.shared`
 3. `zoxide ptx` 暴露 `--arch sm_XX`；arch 数据接入 ✅（v0.0.1-alpha）
 4. build.zig 集成：✅ `zig build kernels` 编译全部示例
-5. 真机验证：⏳ 4 个示例 PTX 待 H20 pod 上 ptxas 汇编确认；kernel 实际加载运行依赖 M2 host runner
+5. 真机验证：✅ 已完成（2026-09-18，H20 pod；见 M2 验收注）
 
 验收：`examples/vector_add` 与 `examples/sgemm_naive`（含共享内存 tile）端到端通过。（当前已有 vector_add/shared_reverse/warp_reduce/atomic_counter 四个示例，端到端运行待 M2）
 
 ### M2 —— Host 侧闭环（预计 4–7 天）✅ 已在 H20 pod 真机验收
 
 1. libcuda dlopen 绑定（cuInit/cuModuleLoad/cuLaunchKernel/…，约 30–50 个函数起步）✅ `src/cuda_driver.zig`（16 函数，手写 extern + dlopen `libcuda.so.1`）
-2. `@embedFile` cubin + comptime 生成类型化 launch API（对标 `#[cuda_module]`）—— 未做，降级为 M4 候选（当前 `zoxide run` CLI 形态已满足验证需求）
-3. gpu_printf 封装 —— 未做（生成器已含 vprintf intrinsic 映射，封装留 M4）
+2. `@embedFile` cubin + comptime 生成类型化 launch API（对标 `#[cuda_module]`）—— ✅ 已落地（v0.0.10，类型化 launch 在 `src/host.zig` 的 `Module.kernel`/`Kernel(Decl)`；`@embedFile` PTX + `moduleFromPtx` 为下游标准形态,见 tests/downstream）
+3. gpu_printf 封装 —— ✅ 已落地（`cuda.printf`,src/cuda.zig；LLVM 无 llvm.nvvm.vprintf,正确路径是调用字面名 `vprintf`）
 4. `zoxide run` 一条命令：编译 kernel → cubin → 加载 → 启动 → 校验输出 ✅
 
 验收：host+device 单文件（或单包）体验，vector_add 全自动端到端。——**已验收（2026-09-18，H20 pod，driver 550.90.07，ptxas 12.8）**：vector_add / shared_reverse / warp_reduce / atomic_counter 四个示例全部 PASS，含一次真实 bug 修复（barrier 跨分支复制死锁，与 cuda-oxide JumpThreading 问题同类）。

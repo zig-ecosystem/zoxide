@@ -191,11 +191,14 @@ NVIDIA PTX ISA documentation data, Apache-2.0.
 Current coverage: 329 intrinsic wrappers (`src/gen/intrinsics.zig`) + 618
 asm-template wrappers (`src/gen/instrinsics_asm.zig`, LLVM positional `$N`
 templates rewritten to zig named operands `%[name]`). By catalog `id` match
-that is **943 of 1025 entries** (2026-09-25 recount); the missing 82 —
-tcgen05 (71), TMA g2s family (10), wgmma_control (1) — are all asm probes
-exceeding zig's inline-asm operand cap (max 15 outputs / 31 inputs), not
-unmapped work. No-probe entries (raw sreg reads) are hand-covered in
-cuda.zig.
+that is **943 of 1025 entries** (2026-09-25 recount); the per-item
+disposition of the missing 82 (2026-09-29 analysis,
+docs/cuda-oxide-port-plan.md P2): 71 tcgen05 are asm-probe-width blocked
+(>15 outputs — see docs/upstream-asm-output-limit.md); the TMA g2s family is
+hand-written in `src/tma.zig` (all ranks 1d–5d); the TMA prefetch forms are
+covered (intrinsic flag-selection + hand-written gather4); `wgmma_wait_group`
+is hand-written in `src/wgmma.zig`. No-probe entries (raw sreg reads) are
+hand-covered in cuda.zig.
 
 Generated bindings are re-exported as `cuda.gen` (intrinsics) and
 `cuda.asm_gen` (asm-derived) — e.g. `cuda.gen.warp.ballot_sync(mask, pred)`,
@@ -276,7 +279,7 @@ reg 15319 (34.8%) of the ~44 TFLOPS FP32 peak; reg verified at n=4000
   tile (warp tile 64x64 = 4x8 mma), cp.async.cg 16B double-buffered pipeline
   (`cp_async_wait_group` takes a comptime immediate — the NVVM intrinsic's
   runtime i32 form does not select).
-  Measured on H20: 54.5 TFLOPS (36.4% of FP16 tensor peak), exact results.
+  Measured on H20: 54.5 TFLOPS (36.8% of FP16 tensor peak), exact results.
 - `hgemm_bf16.zig`: hgemm_mma2's shape with bf16 inputs
   (`mma.sync.aligned.m16n8k16.row.col.f32.bf16.bf16.f32`). Zig has no bf16
   type, so values move as u16 bit patterns through the same ldmatrix +
@@ -308,8 +311,8 @@ reg 15319 (34.8%) of the ~44 TFLOPS FP32 peak; reg verified at n=4000
   sparse ceiling. PTX-complete; GPU run parked.
 ![HGEMM progression on H20](docs/assets/hgemm-progression.svg)
 
-- `hgemm_wgmma.zig`: Hopper warpgroup MMA. 86.3 TFLOPS (54.3% of FP16 tensor
-  peak) on H20, exact results — 1.49x over `hgemm_mma2`. One
+- `hgemm_wgmma.zig`: Hopper warpgroup MMA. 86.3 TFLOPS (58.3% of FP16 tensor
+  peak) on H20, exact results — 1.58x over `hgemm_mma2`. One
   warpgroup (128 threads) per block, 64x128 block tile, K-slice 16, cp.async
   double buffering, both operands read asynchronously from shared memory via
   64-bit matrix descriptors. Requires `sm_90a` and n % 128 == 0.
@@ -330,7 +333,7 @@ reg 15319 (34.8%) of the ~44 TFLOPS FP32 peak; reg verified at n=4000
   `m64nNk16` needs N/2 accumulator registers per thread and every one must be
   an asm output operand, so `m64n32k16` (16 regs) is already one over. The
   kernel therefore tiles n16 eight times to cover N=128, re-reading the A
-  tile from shared memory 8x per K-stage instead of once. The 54.3% above is
+  tile from shared memory 8x per K-stage instead of once. The 58.3% above is
   achieved *with* that handicap; see `docs/upstream-asm-output-limit.md`.
 - `hgemm_wgmma2.zig`: same shape, 3-stage pipeline. 86.3 TFLOPS (58.3% of FP16
   tensor peak), exact results — but **worth nothing over `hgemm_wgmma`**, and the
