@@ -127,6 +127,15 @@ own ElfDynLib loader, which may not handle libcuda's dependency chain. The
 gnu build links against glibc ≤ 2.28 symbols, so it runs on any pod image
 with glibc ≥ 2.28 (Ubuntu 20.04+).
 
+The example kernels are also compiled *into* the binary (build-time
+`-Dembed-kernels`, default on; ~700 KB of PTX in 38 kernels): a bare kernel
+name resolves to the embedded PTX, so the bundle's `kernels/` directory is
+optional for the bundled examples — `./zoxide bench hgemm_bf16` works
+without it. An explicit path that exists always wins; a path-shaped input
+that doesn't exist never falls back (a typo must not run a different
+kernel), and an unknown bare name errors with the list of embedded stems.
+`zoxide lint` resolves names the same way.
+
 ## Running kernels on the GPU (`zoxide run`)
 
 `src/cuda_driver.zig` binds the CUDA driver API by dlopening

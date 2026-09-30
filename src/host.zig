@@ -690,3 +690,8 @@ test "declared launch bounds are validated and name the contract" {
     const kb: Bare = .{ .inner = undefined, .limits = k.limits, .max_threads = 1024 };
     try std.testing.expect(kb.checkGeometry(.{ .x = 6 }, .{ .x = 256 }, 0, &msg, &buf));
 }
+
+test {
+    // Embedded-kernel registry lookup (stem normalization).
+    std.testing.refAllDecls(@import("embedded.zig"));
+}

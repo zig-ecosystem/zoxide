@@ -5,6 +5,8 @@ const bench_cmd = @import("bench.zig");
 const gen_cmd = @import("gen.zig");
 const ptx = @import("ptx.zig");
 const toolwrap = @import("toolwrap.zig");
+const emb = @import("embedded.zig");
+const embedded_kernels = @import("embedded_kernels");
 
 /// Baseline GPU: NVIDIA H20 (Hopper, compute capability 9.0).
 const default_sm = "sm_90";
@@ -191,10 +193,18 @@ fn cmdLint(gpa: std.mem.Allocator, io: std.Io, args: []const [:0]const u8, out: 
             return 1;
         }
     }
-    const path = positional orelse {
-        std.debug.print("error: expected 'zoxide lint <file.ptx> [--census]'\n", .{});
+    var path = positional orelse {
+        std.debug.print("error: expected 'zoxide lint <file.ptx|name> [--census]'\n", .{});
         return 1;
     };
+    const resolved: ?[]u8 = resolveKernelInput(gpa, io, path) catch |e| switch (e) {
+        error.UnknownKernel => return 1,
+        else => return e,
+    };
+    defer if (resolved) |p| {
+        cleanupResolved(gpa, io, p);
+    };
+    if (resolved) |p| path = p;
     const src = std.Io.Dir.cwd().readFileAlloc(io, path, gpa, .unlimited) catch |e| {
         std.debug.print("error: cannot read '{s}': {s}\n", .{ path, @errorName(e) });
         return 1;
@@ -426,7 +436,15 @@ fn cmdRun(gpa: std.mem.Allocator, io: std.Io, env: *std.process.Environ.Map, arg
             return usageErr("run: unexpected argument");
         }
     }
-    if (!have_input) return usageErr("expected 'zoxide run <example.ptx|.cubin> [--kernel name] [--n N] [--grid G --block B] [--arch sm_XX]'");
+    if (!have_input) return usageErr("expected 'zoxide run <example.ptx|.cubin|name> [--kernel name] [--n N] [--grid G --block B] [--arch sm_XX]'");
+    const resolved: ?[]u8 = resolveKernelInput(gpa, io, ra.input) catch |e| switch (e) {
+        error.UnknownKernel => return 1,
+        else => return e,
+    };
+    defer if (resolved) |p| {
+        cleanupResolved(gpa, io, p);
+    };
+    if (resolved) |p| ra.input = p;
     if (!fileExists(io, ra.input)) {
         std.debug.print("error: input file not found: '{s}'\n", .{ra.input});
         return 1;
@@ -476,7 +494,15 @@ fn cmdBench(gpa: std.mem.Allocator, io: std.Io, env: *std.process.Environ.Map, a
             return usageErr("bench: unexpected argument");
         }
     }
-    if (!have_input) return usageErr("expected 'zoxide bench <sgemm_naive|sgemm_tiled>.ptx [--n N] [--iters K]'");
+    if (!have_input) return usageErr("expected 'zoxide bench <kernel.ptx|name> [--n N] [--iters K]'");
+    const resolved: ?[]u8 = resolveKernelInput(gpa, io, ba.input) catch |e| switch (e) {
+        error.UnknownKernel => return 1,
+        else => return e,
+    };
+    defer if (resolved) |p| {
+        cleanupResolved(gpa, io, p);
+    };
+    if (resolved) |p| ba.input = p;
     if (!fileExists(io, ba.input)) {
         std.debug.print("error: input file not found: '{s}'\n", .{ba.input});
         return 1;
@@ -490,6 +516,42 @@ fn cmdBench(gpa: std.mem.Allocator, io: std.Io, env: *std.process.Environ.Map, a
 fn usageErr(msg: []const u8) u8 {
     std.debug.print("error: {s}\n", .{msg});
     return 1;
+}
+
+/// Resolve a run/bench/lint input: an explicit path that exists wins;
+/// otherwise a bare kernel name resolves against the PTX embedded in this
+/// binary (build-time `-Dembed-kernels`, default on). Returns null to use
+/// the input as-is; otherwise a freshly written temp .ptx path the caller
+/// must free and delete. A bare name that matches nothing is an error
+/// listing the embedded stems, because "unknown kernel" and "forgot to build
+/// kernels/" look identical from the CLI without it.
+fn resolveKernelInput(gpa: std.mem.Allocator, io: std.Io, input: []const u8) !?[]u8 {
+    if (fileExists(io, input)) return null;
+    const stem = emb.stemOf(input) orelse return null; // path-shaped: let the caller report it
+    const bytes = emb.lookup(embedded_kernels.kernels, stem) orelse {
+        const avail = try emb.stems(gpa, embedded_kernels.kernels);
+        defer gpa.free(avail);
+        std.debug.print("error: '{s}' is not a file and not an embedded kernel; available:", .{input});
+        for (avail) |s| std.debug.print(" {s}", .{s});
+        std.debug.print("\n", .{});
+        return error.UnknownKernel;
+    };
+    // The stem must survive as the file's basename: run/bench key kernel
+    // selection on it.
+    const dir = try std.fmt.allocPrint(gpa, "/tmp/zoxide-embedded-{d}", .{std.c.getpid()});
+    defer gpa.free(dir);
+    std.Io.Dir.cwd().createDirPath(io, dir) catch {};
+    const p = try std.fmt.allocPrint(gpa, "{s}/{s}.ptx", .{ dir, stem });
+    errdefer gpa.free(p);
+    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = p, .data = bytes });
+    return p;
+}
+
+/// Delete a temp file from resolveKernelInput, and its (now empty) pid dir.
+fn cleanupResolved(gpa: std.mem.Allocator, io: std.Io, p: []u8) void {
+    std.Io.Dir.deleteFileAbsolute(io, p) catch {};
+    if (std.fs.path.dirname(p)) |d| std.Io.Dir.deleteDirAbsolute(io, d) catch {};
+    gpa.free(p);
 }
 
 fn cmdDoctor(gpa: std.mem.Allocator, io: std.Io, env: *std.process.Environ.Map, args: []const [:0]const u8) !u8 {
