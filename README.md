@@ -17,7 +17,7 @@ Target GPU: NVIDIA H20 (Hopper, compute capability 9.0, `sm_90`).
 ## Use as a Zig package (downstream)
 
 ```sh
-zig fetch --save git+https://github.com/zig-ecosystem/zoxide#v0.1.0
+zig fetch --save git+https://github.com/zig-ecosystem/zoxide#v0.0.14-alpha
 ```
 
 In your `build.zig`:
@@ -189,7 +189,7 @@ vendor it here — catalog.json alone is ~365k lines). Catalog provenance:
 NVIDIA PTX ISA documentation data, Apache-2.0.
 
 Current coverage: 329 intrinsic wrappers (`src/gen/intrinsics.zig`) + 618
-asm-template wrappers (`src/gen/instrinsics_asm.zig`, LLVM positional `$N`
+asm-template wrappers (`src/gen/intrinsics_asm.zig`, LLVM positional `$N`
 templates rewritten to zig named operands `%[name]`). By catalog `id` match
 that is **943 of 1025 entries** (2026-09-25 recount); the per-item
 disposition of the missing 82 (2026-09-29 analysis,
@@ -434,7 +434,7 @@ to look for). Example: `src/examples/debug_print.zig`.
 ```sh
 zoxide new my-thing
 cd my-thing
-zig fetch --save git+https://github.com/zig-ecosystem/zoxide#v0.0.12-alpha
+zig fetch --save git+https://github.com/zig-ecosystem/zoxide#v0.0.14-alpha
 zig build run        # needs an NVIDIA GPU
 zig build ptx        # emit the PTX to zig-out/kernels/ and read it
 ```
@@ -706,9 +706,11 @@ kernel symbol for two commits. Nothing on a machine without a GPU can detect tha
 notices.
 
 `scripts/pod-verify.sh [zoxide-binary] [ptx-dir] [--quick]` runs doctor →
-run × 4 examples → TMA smokes (`tma_smoke` g2s tile copy, `tma_s2g_smoke`
-g2s→s2g round trip, both `--arch sm_90a`, arch rejection degrades to SKIP) →
-sgemm_swz bench smoke → intrinsics_smoke ptxas assembly,
+run: vector_add / shared_reverse / warp_reduce / atomic_counter / wgmma_smoke /
+dev_global / const_bank / const_vs_ldg / tma_smoke / tma_s2g_smoke (TMA smokes
+are `--arch sm_90a`, arch rejection degrades to SKIP) → bench smoke:
+sgemm_swz + hgemm_wgmma×3 → cubin: intrinsics_smoke ptxas assembly —
+15 checks total in degraded mode,
 printing one PASS/FAIL/SKIP line per check plus a totals summary, and writes
 a timestamped report (`zoxide-verify-<ts>.txt`) with GPU/driver/ptxas
 environment info. Missing PTX files are SKIP, not FAIL. With no GPU visible
@@ -730,7 +732,13 @@ intrinsics or Zig builtins. API overview:
 | `syncThreads()` | `llvm.nvvm.barrier0` → `bar.sync 0` |
 | `syncWarp(mask)` | `llvm.nvvm.bar.warp.sync` |
 | `shflDownSync / shflUpSync / shflXorSync / shflIdxSync(T, mask, val, off)` for `i32/u32/f32` | `llvm.nvvm.shfl.sync.{down,up,bfly,idx}.i32` (f32 via bitcast) |
-| `atomicAdd(T, ptr, val)` for `u32/u64/f32`, global or shared pointers | Zig `@atomicRmw` → single `atom.{global,shared}.add.*` |
+| `atomicAdd(T, ptr, val)` for `u32/u64/f32/f64`, global or shared pointers | Zig `@atomicRmw` → single `atom.{global,shared}.add.*` |
+| `atomicMin/Max/And/Or/Xor/Exch/Cas` (P1e expansion) | `atom.{min,max,and,or,xor,exch,cas}.*`, per-type |
+| `cuda.printf(comptime fmt, args)` | `vprintf` + per-callsite `.global` format string |
+| `cuda.ldg(ptr)` | `ld.global.nc` — constant-fold-proof read (dev_global/const_bank) |
+| `cuda.launchBounds(contract)` | `.maxntid` / `.minnctapersm` / `.maxnreg` in the `.entry` body |
+| `cuda.math` (`src/math.zig`) | fast tier → `sin.approx.f32` etc.; software tier → plain arithmetic (CI-asserted) |
+| `cuda.tma` (`src/tma.zig`) | TMA descriptors/mbarrier/g2s loads (all ranks)/s2g via gen/L2 prefetch |
 | `Keep(.{ &kernelA, &kernelB })` | dummy-export DCE workaround, see below |
 
 Example kernel skeleton:
