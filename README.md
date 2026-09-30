@@ -612,7 +612,9 @@ kernel symbol for two commits. Nothing on a machine without a GPU can detect tha
 notices.
 
 `scripts/pod-verify.sh [zoxide-binary] [ptx-dir] [--quick]` runs doctor →
-run × 4 examples → sgemm_swz bench smoke → intrinsics_smoke ptxas assembly,
+run × 4 examples → TMA smokes (`tma_smoke` g2s tile copy, `tma_s2g_smoke`
+g2s→s2g round trip, both `--arch sm_90a`, arch rejection degrades to SKIP) →
+sgemm_swz bench smoke → intrinsics_smoke ptxas assembly,
 printing one PASS/FAIL/SKIP line per check plus a totals summary, and writes
 a timestamped report (`zoxide-verify-<ts>.txt`) with GPU/driver/ptxas
 environment info. Missing PTX files are SKIP, not FAIL. With no GPU visible

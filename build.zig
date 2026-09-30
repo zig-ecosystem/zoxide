@@ -198,6 +198,7 @@ pub fn build(b: *std.Build) void {
         .{ .name = "const_vs_ldg" },
         .{ .name = "mbar_smoke", .sm = sm_90a_model },
         .{ .name = "tma_smoke", .sm = sm_90a_model },
+        .{ .name = "tma_s2g_smoke", .sm = sm_90a_model },
         .{ .name = "cpasync_mbar_smoke", .sm = sm_90a_model },
         .{ .name = "ldmatrix_smoke", .sm = sm_100a_model },
         .{ .name = "warpops_smoke", .sm = sm_100a_model },

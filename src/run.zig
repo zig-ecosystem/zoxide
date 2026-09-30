@@ -36,6 +36,7 @@ const examples = [_]Example{
     .{ .stem = "const_vs_ldg", .entry = "constUniform", .default_block = 256 },
     .{ .stem = "mbar_smoke", .entry = "barOnly", .default_block = 128 },
     .{ .stem = "tma_smoke", .entry = "tmaSmoke", .default_block = 128 },
+    .{ .stem = "tma_s2g_smoke", .entry = "tmaS2gSmoke", .default_block = 128 },
 };
 
 fn findExample(path: []const u8) ?Example {
@@ -151,6 +152,8 @@ pub fn run(
         try runMbarSmoke(gpa, &ctx, mod, out)
     else if (std.mem.eql(u8, ex.stem, "tma_smoke"))
         try runTmaSmoke(gpa, &ctx, func, out)
+    else if (std.mem.eql(u8, ex.stem, "tma_s2g_smoke"))
+        try runTmaS2gSmoke(gpa, &ctx, func, out)
     else
         try runAtomicCounter(gpa, &ctx, func, args, out);
     return r;
@@ -477,6 +480,147 @@ fn runTmaSmoke(
     });
 
     try out.print("PASS: tma_smoke descriptor-driven 2D tile copy, {d} bytes exact + swizzle control\n", .{p.tile_bytes});
+    return 0;
+}
+
+/// TMA s2g: does the generated `cp.async.bulk.tensor.*.global.shared::cta`
+/// wrapper store a shared tile back to global at the right coordinates?
+///
+/// Round trip: g2s a tile into shared (tma_smoke's established path, used
+/// not re-claimed), s2g it into a *different* tensor through a second
+/// descriptor, then compare the whole destination tensor on the host. The
+/// destination is pre-filled with a sentinel and the store lands at the
+/// same non-origin coordinates as the load, so the failure modes are
+/// distinguishable: tile bytes wrong -> the store moved the wrong data;
+/// sentinel damaged outside the tile -> the store ignored its coordinates
+/// or the descriptor geometry; tile missing entirely -> the s2g never
+/// landed (stage markers say whether it was issued and drained).
+///
+/// Completion differs from g2s: no mbarrier, but `cp.async.bulk.commit_group`
+/// + `cp.async.bulk.wait_group.read 0`. The `.read` drain only proves the
+/// shared tile was consumed; global visibility comes from `cuCtxSynchronize`
+/// before the comparison, which the kernel doc comment spells out.
+fn runTmaS2gSmoke(
+    gpa: std.mem.Allocator,
+    ctx: *cu.Context,
+    func: cu.Function,
+    out: *std.Io.Writer,
+) !u8 {
+    const p = abi.tma_smoke;
+    const q = abi.tma_s2g_smoke;
+    const sentinel: u8 = 0xaa;
+
+    // Same source fill as tma_smoke: distinct per element so a permutation
+    // cannot go unnoticed.
+    const src = try gpa.alloc(u16, p.rows * p.cols);
+    defer gpa.free(src);
+    for (src, 0..) |*v, i| v.* = @intCast(i % 0xffff);
+
+    const tensor_bytes = src.len * @sizeOf(u16);
+    const dsrc = try ctx.alloc(tensor_bytes);
+    defer ctx.free(dsrc);
+    try ctx.copyHtoD(dsrc, std.mem.sliceAsBytes(src));
+
+    const ddst = try ctx.alloc(tensor_bytes);
+    defer ctx.free(ddst);
+    const fill = try gpa.alloc(u8, tensor_bytes);
+    defer gpa.free(fill);
+    @memset(fill, sentinel);
+    try ctx.copyHtoD(ddst, fill);
+
+    const ddiag = try ctx.alloc(q.diag_words * @sizeOf(u32));
+    defer ctx.free(ddiag);
+    const ddesc_in = try ctx.alloc(128);
+    defer ctx.free(ddesc_in);
+    const ddesc_out = try ctx.alloc(128);
+    defer ctx.free(ddesc_out);
+
+    // Deliberately not (0,0), same rule as tma_smoke: a store that ignores
+    // coordinates would pass at the origin.
+    const tile_x: i32 = 64;
+    const tile_y: i32 = 16;
+
+    const dim = [_]u64{ p.cols, p.rows };
+    const strides = [_]u64{p.cols * p.elem_bytes};
+    const box = [_]u32{ p.box_cols, p.box_rows };
+
+    std.debug.print("  [s2g] encoding descriptors\n", .{});
+    const map_in = ctx.encodeTensorMap(f16, dsrc, dim[0..], strides[0..], box[0..], .{}) catch {
+        try out.print("FAIL: encodeTensorMap(in): {s}\n", .{ctx.drv.lastError()});
+        return 1;
+    };
+    const map_out = ctx.encodeTensorMap(f16, ddst, dim[0..], strides[0..], box[0..], .{}) catch {
+        try out.print("FAIL: encodeTensorMap(out): {s}\n", .{ctx.drv.lastError()});
+        return 1;
+    };
+    if (map_in.tileBytes() != p.tile_bytes or map_out.tileBytes() != p.tile_bytes) {
+        return fail(out, "descriptor tile is {d}/{d} bytes, kernel reserves {d}", .{ map_in.tileBytes(), map_out.tileBytes(), p.tile_bytes });
+    }
+    try ctx.copyHtoD(ddesc_in, std.mem.asBytes(&map_in.map));
+    try ctx.copyHtoD(ddesc_out, std.mem.asBytes(&map_out.map));
+
+    var diag = [_]u32{0} ** q.diag_words;
+    try ctx.copyHtoD(ddiag, std.mem.sliceAsBytes(diag[0..]));
+
+    var arg_diag = ddiag;
+    var arg_in = ddesc_in;
+    var arg_out_desc = ddesc_out;
+    var arg_x = tile_x;
+    var arg_y = tile_y;
+    var params = [_]?*anyopaque{ &arg_diag, &arg_in, &arg_out_desc, &arg_x, &arg_y };
+
+    // stderr progress markers, same reason as runTmaSmoke: a hang must be
+    // localisable without a clean exit.
+    std.debug.print("  [s2g] launching\n", .{});
+    try func.launch(1, 1, 1, p.block, 1, 1, &params);
+    std.debug.print("  [s2g] launched, synchronising\n", .{});
+    try ctx.synchronize();
+    std.debug.print("  [s2g] synchronised, reading back\n", .{});
+    try ctx.copyDtoH(std.mem.sliceAsBytes(diag[0..]), ddiag);
+
+    if (diag[0] == 0) return fail(out, "the kernel did not reach its first instruction", .{});
+    if (diag[1] == 0) return fail(out, "stopped between entry and mbarrier.init + fence", .{});
+    if (diag[2] == 0) return fail(out, "mbarrier.init succeeded but the g2s issue never returned", .{});
+    if (diag[3] == 0) {
+        return fail(out, "the g2s mbarrier never completed — the load half of the round trip failed; run tma_smoke to bisect", .{});
+    }
+    if (diag[4] == 0) return fail(out, "g2s landed but cp.async.bulk.tensor.s2g never returned", .{});
+    if (diag[5] == 0) return fail(out, "s2g issued but cp.async.bulk.wait_group.read 0 never drained", .{});
+    try out.print("  [s2g] stages: g2s landed, s2g issued and drained at tile ({d},{d})\n", .{ tile_x, tile_y });
+
+    try ctx.copyDtoH(fill, ddst);
+
+    // Expected: sentinel everywhere except the tile, which is the source tile.
+    var tile_bad: usize = 0;
+    var first_tile: usize = 0;
+    var sentinel_bad: usize = 0;
+    var first_sentinel: usize = 0;
+    for (0..p.rows) |r| {
+        for (0..p.cols) |c| {
+            const off = (r * p.cols + c) * p.elem_bytes;
+            const in_tile = r >= @as(usize, @intCast(tile_y)) and r < @as(usize, @intCast(tile_y)) + p.box_rows and
+                c >= @as(usize, @intCast(tile_x)) and c < @as(usize, @intCast(tile_x)) + p.box_cols;
+            if (in_tile) {
+                const want = std.mem.sliceAsBytes(src[(r * p.cols + c)..][0..1]);
+                if (!std.mem.eql(u8, fill[off..][0..p.elem_bytes], want)) {
+                    if (tile_bad == 0) first_tile = off;
+                    tile_bad += 1;
+                }
+            } else {
+                if (fill[off] != sentinel or fill[off + 1] != sentinel) {
+                    if (sentinel_bad == 0) first_sentinel = off;
+                    sentinel_bad += 1;
+                }
+            }
+        }
+    }
+    if (tile_bad != 0) {
+        return fail(out, "s2g tile wrong in {d}/{d} elements; first at byte {d} — the store moved the wrong data", .{ tile_bad, p.box_cols * p.box_rows, first_tile });
+    }
+    if (sentinel_bad != 0) {
+        return fail(out, "{d} sentinel elements damaged outside the tile (first at byte {d}) — the store ignored its coordinates or the descriptor geometry", .{ sentinel_bad, first_sentinel });
+    }
+    try out.print("PASS: tma_s2g_smoke s2g round trip, {d} tile bytes exact at ({d},{d}), sentinel intact elsewhere\n", .{ p.tile_bytes, tile_x, tile_y });
     return 0;
 }
 

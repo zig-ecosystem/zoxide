@@ -66,6 +66,7 @@ if [ "$DEGRADED" = 1 ]; then
     if have_ptx const_bank; then record SKIP "run/const_bank" "no GPU"; else record SKIP "run/const_bank" "PTX missing"; fi
     if have_ptx const_vs_ldg; then record SKIP "run/const_vs_ldg" "no GPU"; else record SKIP "run/const_vs_ldg" "PTX missing"; fi
     if have_ptx tma_smoke; then record SKIP "run/tma_smoke" "no GPU"; else record SKIP "run/tma_smoke" "PTX missing"; fi
+    if have_ptx tma_s2g_smoke; then record SKIP "run/tma_s2g_smoke" "no GPU"; else record SKIP "run/tma_s2g_smoke" "PTX missing"; fi
     if have_ptx sgemm_swz; then record SKIP "bench/sgemm_swz" "no GPU"; else record SKIP "bench/sgemm_swz" "PTX missing"; fi
     for k in hgemm_wgmma hgemm_wgmma2 hgemm_wgmma3; do
         if have_ptx "$k"; then record SKIP "bench/$k" "no GPU"; else record SKIP "bench/$k" "PTX missing"; fi
@@ -167,6 +168,21 @@ else
         record SKIP "run/tma_smoke" "TMA unavailable: $(echo "$out" | tail -1)"
     else
         record FAIL "run/tma_smoke" "$(echo "$out" | tail -2 | tr '\n' ' ')"
+    fi
+fi
+
+# 2g. TMA s2g round trip: g2s in, generated cp.async.bulk.tensor s2g back out.
+#     Same arch rules as tma_smoke: arch rejection is a SKIP, wrong bytes a FAIL.
+if ! have_ptx tma_s2g_smoke; then
+    record SKIP "run/tma_s2g_smoke" "PTX missing"
+else
+    out=$("$ZOXIDE" run "$PTXDIR/tma_s2g_smoke.ptx" --arch sm_90a 2>&1)
+    if echo "$out" | grep -q '^PASS'; then
+        record PASS "run/tma_s2g_smoke" "$(echo "$out" | grep -m1 '^PASS')"
+    elif echo "$out" | grep -qi 'failed to assemble\|not supported\|invalid arch\|CUDA 12'; then
+        record SKIP "run/tma_s2g_smoke" "TMA unavailable: $(echo "$out" | tail -1)"
+    else
+        record FAIL "run/tma_s2g_smoke" "$(echo "$out" | tail -2 | tr '\n' ' ')"
     fi
 fi
 

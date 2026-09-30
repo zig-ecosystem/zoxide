@@ -54,6 +54,7 @@
 前提:P0 的 TMA 结论**已出且为否**(H1 不成立,见 tma-plan.md S2)——TMA 对 hgemm 吞吐的动机已被数据否定,P2 的 TMA 项动机只剩"能力完整性",优先级确认下调;TMA s2g/multicast 如无外部需求可继续挂起。
 
 - [ ] **TMA s2g + multicast**:s2g wrapper 已有生成物,补 smoke 验证;multicast 依赖 cluster(tma-plan.md 已注明 cluster 不排期),multicast 随之挂起,除非届时有集群硬件需求。
+  - 进展(2026-09-30):**s2g smoke 完成(PTX 级)**——`tma_s2g_smoke`,按 one-smoke-one-claim 独立成 kernel,g2s 进 shared(复用 tma_smoke 已验证路径,只使用不重复断言)→ 生成物 `gen.tma.cp_async_bulk_tensor_2d_s2g` 写回**另一个** tensor,host 全量比对(瓦片精确 + 哨兵区完好,坐标仍取非原点 (64,16))。**完成机制差异已写入 kernel 注释**:s2g 无 mbarrier 操作数,走 `cp.async.bulk.commit_group` + `cp.async.bulk.wait_group.read 0`(`.read` 只保证 shared 可读复用,全局可见性由 host 侧 cuCtxSynchronize 兜底)。PTX 双向指令、commit/wait_group、无残留,CI 断言已加;pod-verify.sh 2g 段已登记(降级模式 SKIP,arch 拒绝按 SKIP 处理);真机运行挂起至 GPU 环境。multicast 仍随 cluster 挂起。
   - **tma 缺失条目逐条结论**(2026-09-29,对 upstream HEAD catalog 1029 条;注意上游从 1025 涨到 1029,新增的是 cache_hint 变体):缺失 13 条 = g2s 7 + prefetch 6。
     - g2s 7 条(1d/2d/3d/4d/5d + 2d multicast×2):LLVM 无 g2s 方向 intrinsic,生成器无产出(tma-plan S0 已记);其中 2d/3d 已在 `src/tma.zig` 手写 asm 覆盖,1d/4d/5d 同模板可即时补齐;multicast 2 条随 cluster 挂起。
     - prefetch 6 条(1d_l2、5d_l2、gather4_2d_l2、2d/3d/4d 的 cache_hint):fire-and-forget,无 mbarrier 依赖,是 13 条里成本最低的一批;NVVM 已暴露部分非 cache_hint 形式(2d/4d_l2 已生成),补法 = 生成器补 cache_hint 维度或手写 6 条 asm。

@@ -169,6 +169,18 @@ pub const tma_smoke = struct {
     pub const diag_words = 11;
 };
 
+/// `tma_s2g_smoke`: the s2g half of the TMA round trip — g2s a tile into
+/// shared (tma_smoke's path), then store it back out through a second
+/// descriptor with the generated `cp.async.bulk.tensor.*.global.shared::cta`
+/// wrapper. Tile geometry is tma_smoke's, referenced in the kernel rather
+/// than copied here, because descriptor, buffer and expect_tx count must
+/// agree for the same reasons as above.
+pub const tma_s2g_smoke = struct {
+    pub const signature = fn (diag: [*]u32, desc_in: u64, desc_out: u64, x: i32, y: i32) void;
+    /// Stage markers, so a device-side failure reports where it stopped.
+    pub const diag_words = 6;
+};
+
 pub const atomics_smoke = struct {
     pub const signature = fn (src: [*]const i32, diag: [*]u32) void;
     /// diag layout: see src/examples/atomics_smoke.zig.

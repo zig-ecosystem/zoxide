@@ -159,6 +159,17 @@ jobs:
           test "$(grep -c 'bar\.sync' hgemm_sp.ptx)" -eq 2
           grep -q '\.target sm_9' hgemm_sp.ptx
           if grep -q 'st\.local' hgemm_sp.ptx; then echo "hgemm_sp: spilled to local memory"; exit 1; fi
+          # tma_s2g_smoke: the s2g round trip — generated store wrapper plus
+          # bulk-group completion on one side, the hand-written g2s load on
+          # the other. Both directions must appear; if the s2g line vanishes
+          # the smoke is no longer testing the store.
+          grep -q '\.target sm_90a' tma_s2g_smoke.ptx
+          grep -q 'cp\.async\.bulk\.tensor\.2d\.global\.shared::cta\.tile' tma_s2g_smoke.ptx
+          grep -q 'cp\.async\.bulk\.tensor\.2d\.shared::cluster\.global\.tile\.mbarrier::complete_tx::bytes' tma_s2g_smoke.ptx
+          grep -q 'cp\.async\.bulk\.commit_group' tma_s2g_smoke.ptx
+          grep -qE 'cp\.async\.bulk\.wait_group\.read\s+0' tma_s2g_smoke.ptx
+          grep -q 'mbarrier\.arrive\.expect_tx' tma_s2g_smoke.ptx
+          if grep -qE '\$[0-9]|%\[' tma_s2g_smoke.ptx; then echo "tma_s2g_smoke: unsubstituted operand"; exit 1; fi
           # wgmma kernels: sm_90a target, RS vs SS operand forms, pipeline depth.
           for f in wgmma_smoke hgemm_wgmma hgemm_wgmma2 hgemm_wgmma3; do
             grep -q '\.target sm_90a' "$f.ptx" || { echo "$f: not built for sm_90a"; exit 1; }
