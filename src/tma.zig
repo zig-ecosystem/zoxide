@@ -219,6 +219,84 @@ pub inline fn prefetchDescriptor(desc: u64) void {
         : .{ .memory = true });
 }
 
+// --- L2 tile prefetch -------------------------------------------------------
+//
+// cp.async.bulk.prefetch.tensor is fire-and-forget: no mbarrier, no bulk
+// group — it warms L2 for a later load and reports nothing. NVVM exposes one
+// intrinsic per dimensionality with a (cache_hint, use_hint) trailing pair;
+// the generator's per-catalog-id naming therefore mapped the plain form for
+// some dims and the cache_hint form for others, leaving six catalog entries
+// nominally missing (1d/5d/gather4 plain, 2d/3d/4d cache_hint). They are all
+// the same intrinsics — these wrappers select the form by the flag. Coords
+// are elements, innermost first, same as the descriptor's box.
+
+fn descPtr(desc: u64) ?*anyopaque {
+    return @ptrFromInt(@as(usize, @intCast(desc)));
+}
+
+pub inline fn prefetch1D(desc: u64, x: i32) void {
+    cuda.gen.tma.cp_async_bulk_prefetch_tensor_1d_l2_cache_hint(descPtr(desc), x, 0, false);
+}
+pub inline fn prefetch1DCacheHint(desc: u64, x: i32, hint: u64) void {
+    cuda.gen.tma.cp_async_bulk_prefetch_tensor_1d_l2_cache_hint(descPtr(desc), x, @bitCast(hint), true);
+}
+pub inline fn prefetch2D(desc: u64, x: i32, y: i32) void {
+    cuda.gen.tma.cp_async_bulk_prefetch_tensor_2d_l2(descPtr(desc), x, y, 0, false);
+}
+pub inline fn prefetch2DCacheHint(desc: u64, x: i32, y: i32, hint: u64) void {
+    cuda.gen.tma.cp_async_bulk_prefetch_tensor_2d_l2(descPtr(desc), x, y, @bitCast(hint), true);
+}
+pub inline fn prefetch3D(desc: u64, x: i32, y: i32, z: i32) void {
+    cuda.gen.tma.cp_async_bulk_prefetch_tensor_3d_l2(descPtr(desc), x, y, z, 0, false);
+}
+pub inline fn prefetch3DCacheHint(desc: u64, x: i32, y: i32, z: i32, hint: u64) void {
+    cuda.gen.tma.cp_async_bulk_prefetch_tensor_3d_l2(descPtr(desc), x, y, z, @bitCast(hint), true);
+}
+pub inline fn prefetch4D(desc: u64, x: i32, y: i32, z: i32, w: i32) void {
+    cuda.gen.tma.cp_async_bulk_prefetch_tensor_4d_l2(descPtr(desc), x, y, z, w, 0, false);
+}
+pub inline fn prefetch4DCacheHint(desc: u64, x: i32, y: i32, z: i32, w: i32, hint: u64) void {
+    cuda.gen.tma.cp_async_bulk_prefetch_tensor_4d_l2(descPtr(desc), x, y, z, w, @bitCast(hint), true);
+}
+pub inline fn prefetch5D(desc: u64, x: i32, y: i32, z: i32, w: i32, v: i32) void {
+    cuda.gen.tma.cp_async_bulk_prefetch_tensor_5d_l2_cache_hint(descPtr(desc), x, y, z, w, v, 0, false);
+}
+pub inline fn prefetch5DCacheHint(desc: u64, x: i32, y: i32, z: i32, w: i32, v: i32, hint: u64) void {
+    cuda.gen.tma.cp_async_bulk_prefetch_tensor_5d_l2_cache_hint(descPtr(desc), x, y, z, w, v, @bitCast(hint), true);
+}
+/// gather4: four row indices per issue. Hand-written asm, same reason as
+/// g2s: the NVVM intrinsic exists but the NVPTX backend never lowers it —
+/// it survives into PTX as an unresolved extern call (verified 2026-09-30;
+/// that is also why the generator's per-id mapping could not have produced
+/// a working wrapper either way).
+pub inline fn prefetchGather4_2D(desc: u64, r0: i32, r1: i32, r2: i32, r3: i32, col: i32) void {
+    asm volatile (
+        \\cp.async.bulk.prefetch.tensor.gather4.2d.L2.global.tile
+        \\  [%[t], {%[c], %[r0], %[r1], %[r2], %[r3]}];
+        :
+        : [t] "l" (desc),
+          [c] "r" (col),
+          [r0] "r" (r0),
+          [r1] "r" (r1),
+          [r2] "r" (r2),
+          [r3] "r" (r3),
+        : .{ .memory = true });
+}
+pub inline fn prefetchGather4_2DCacheHint(desc: u64, r0: i32, r1: i32, r2: i32, r3: i32, col: i32, hint: u64) void {
+    asm volatile (
+        \\cp.async.bulk.prefetch.tensor.gather4.2d.L2.global.tile.L2::cache_hint
+        \\  [%[t], {%[c], %[r0], %[r1], %[r2], %[r3]}], %[h];
+        :
+        : [t] "l" (desc),
+          [c] "r" (col),
+          [r0] "r" (r0),
+          [r1] "r" (r1),
+          [r2] "r" (r2),
+          [r3] "r" (r3),
+          [h] "l" (hint),
+        : .{ .memory = true });
+}
+
 comptime {
     _ = cuda;
 }

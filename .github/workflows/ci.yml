@@ -177,6 +177,11 @@ jobs:
           grep -q 'cp\.async\.bulk\.commit_group' tma_s2g_smoke.ptx
           grep -qE 'cp\.async\.bulk\.wait_group\.read\s+0' tma_s2g_smoke.ptx
           grep -q 'mbarrier\.arrive\.expect_tx' tma_s2g_smoke.ptx
+          # prefetch coverage: intrinsic-lowered 2d plain form, plus the two
+          # hand-written gather4 forms (their NVVM intrinsic does not lower).
+          grep -q 'cp\.async\.bulk\.prefetch\.tensor\.2d\.L2\.global\.tile' tma_s2g_smoke.ptx
+          grep -q 'cp\.async\.bulk\.prefetch\.tensor\.gather4\.2d\.L2\.global\.tile' tma_s2g_smoke.ptx
+          grep -q 'cp\.async\.bulk\.prefetch\.tensor\.gather4\.2d\.L2\.global\.tile\.L2::cache_hint' tma_s2g_smoke.ptx
           if grep -qE '\$[0-9]|%\[' tma_s2g_smoke.ptx; then echo "tma_s2g_smoke: unsubstituted operand"; exit 1; fi
           # wgmma kernels: sm_90a target, RS vs SS operand forms, pipeline depth.
           for f in wgmma_smoke hgemm_wgmma hgemm_wgmma2 hgemm_wgmma3; do

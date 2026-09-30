@@ -73,6 +73,15 @@ pub fn tmaS2gSmoke(diag: [*]u32, desc_in: u64, desc_out: u64, x: i32, y: i32) ca
     cuda.syncThreads();
 
     if (tid == 0) {
+        // Prefetch-then-load is the real usage of cp.async.bulk.prefetch:
+        // warm L2 for the tile the g2s is about to pull. Fire-and-forget —
+        // no barrier, no group; if it is wrong, nothing here observes it,
+        // which is why the CI assertion is on the instruction's presence.
+        // The gather4 forms ride along as compile coverage for the
+        // hand-written asm (their intrinsic does not lower — see tma.zig).
+        tma.prefetch2D(desc_in, x, y);
+        tma.prefetchGather4_2D(desc_in, y, y + 1, y + 2, y + 3, x);
+        tma.prefetchGather4_2DCacheHint(desc_in, y, y + 1, y + 2, y + 3, x, 0);
         bar.arriveExpectTx(geo.tile_bytes);
         tma.load2D(&tile_mem, desc_in, bar, x, y);
         diag[Stage.g2s_issued] = 1;
