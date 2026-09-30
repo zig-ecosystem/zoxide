@@ -4,7 +4,7 @@
 //! let alone lowered. This file references the three matrix families in src/gen
 //! (ldmatrix — 18 decls, stmatrix — 4 decls, both from gen.matrix in
 //! intrinsics.zig, and movmatrix — 1 decl from asmgen.matrix in
-//! instrinsics_asm.zig) so `zig build kernels` proves they compile, and the CI
+//! intrinsics_asm.zig) so `zig build kernels` proves they compile, and the CI
 //! grep assertions prove they reach PTX.
 //!
 //! Two limitations of Zig 0.16's NVPTX backend shape this file:

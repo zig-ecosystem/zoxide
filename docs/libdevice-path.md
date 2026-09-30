@@ -74,7 +74,7 @@ CUDA EULA 与项目的 Apache/MIT 生态不完全相容(可再分发条款仅限
 即超越函数在 nvptx 上既没有 libcall 也没有内联展开——这正是 libdevice
 存在的原因,也是 zoxide 必须自己补的层。
 
-**PTX 单指令覆盖**(生成绑定已存在于 `src/gen/instrinsics_asm.zig` 的
+**PTX 单指令覆盖**(生成绑定已存在于 `src/gen/intrinsics_asm.zig` 的
 `float` 组):
 
 | libdevice 函数 | PTX 单指令 | 备注 |

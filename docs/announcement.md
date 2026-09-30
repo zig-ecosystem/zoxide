@@ -195,7 +195,7 @@ wgmma 和 mma.sync 有两处本质不同。一是 **LLVM 没有 `wgmma.mma_async
 
 ![catalog coverage](assets/catalog-coverage.svg)
 
-M4d 前提证伪后重启：Zig asm 的 `%[name]` 具名操作数替换确认可用（此前只试了位置形式）。生成器新增 **618 条 inline-PTX wrapper**（`src/gen/instrinsics_asm.zig`），catalog 覆盖率从 32% 提到 **92%（947/1025）**——mma.sync / TMA 子集与 wgmma 控制指令可达（`wgmma.mma_async` 本身 LLVM 无 intrinsic，须手写 asm），PTX 文本验证通过（无 `$0` 残留，真实寄存器）。上游 issue 计划撤回：只剩 `llvm.nvvm.*` 文档化一个温和诉求。剩余 163 条 unmapped 的主因是 Zig asm 的 15 输出上限（tcgen05.ld 等超宽指令）。
+M4d 前提证伪后重启：Zig asm 的 `%[name]` 具名操作数替换确认可用（此前只试了位置形式）。生成器新增 **618 条 inline-PTX wrapper**（`src/gen/intrinsics_asm.zig`），catalog 覆盖率从 32% 提到 **92%（947/1025）**——mma.sync / TMA 子集与 wgmma 控制指令可达（`wgmma.mma_async` 本身 LLVM 无 intrinsic，须手写 asm），PTX 文本验证通过（无 `$0` 残留，真实寄存器）。上游 issue 计划撤回：只剩 `llvm.nvvm.*` 文档化一个温和诉求。剩余 163 条 unmapped 的主因是 Zig asm 的 15 输出上限（tcgen05.ld 等超宽指令）。
 
 > **订正（2026-09-25 普查 / 2026-09-29 补记）**：本节的 **947/1025** 与 **剩余 163 条**
 > 两个数都不准，保留原文是因为公告是历史记录，不是当前状态。
@@ -244,7 +244,7 @@ SGEMM 优化线收官：naive 2.8 TF → tiled 4.4 TF → register-blocked 15.3 
 3. Honest gaps vs cuda-oxide: no proc-macro safety layer yet; tcgen05/mma/TMA intrinsics blocked on Zig's asm-template limitations (689 catalog entries waiting on upstream). But 329 typed intrinsics already generated from cuda-oxide's own catalog (Apache-2.0 data reuse) 🙏
 
 > **订正（2026-09-20，v0.0.4 追记；2026-09-25 再订正）**：「689 条等上游」当天即被推翻——
-> Zig asm 支持 `%[name]` 具名操作数，689 条里 618 条直接生成（`src/gen/instrinsics_asm.zig`）。
+> Zig asm 支持 `%[name]` 具名操作数，689 条里 618 条直接生成（`src/gen/intrinsics_asm.zig`）。
 > 2026-09-25 普查按 catalog `id` 重新计数：总覆盖 **943/1025（92%）**；真正受 asm 宽度
 > 上限阻塞的只有 tcgen05 71 条，其余缺口的逐条结论见 `docs/cuda-oxide-port-plan.md` P2。
 

@@ -19,7 +19,7 @@
 //! `@sqrt`/`@max`/`@min`/`@abs`/`@floor` do lower natively and are
 //! re-exported under CUDA names.
 
-const asm_gen = @import("gen/instrinsics_asm.zig");
+const asm_gen = @import("gen/intrinsics_asm.zig");
 
 const pi_2: f32 = 0x1.921fb6p0;
 const two_over_pi_f64: f64 = 0x1.45f306dc9c883p-1;

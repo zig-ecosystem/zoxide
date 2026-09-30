@@ -96,7 +96,7 @@ kernel.zig → PTX（NVPTX 后端）→ ptxas 编排 → doctor。**结论：路
 2. 原子操作全集（scope/ordering 矩阵）、cp.async、TMA、WGMMA、cluster 等按 arch 门控 —— 基本完成（2026-09-25 普查订正：按 catalog `id` 匹配，已生成 **943/1025**；缺失仅 82 条——tcgen05 71、TMA g2s 系 10、wgmma_control 1，全部是 asm 输出 >15 的超宽指令，属上限受限而非"没做"。scoped 原子变体因 `@atomicRmw` 无法选 scope 未纳入）
 3. 与 cuda-oxide 生成的声明做 diff 对拍（数据源相同，输出应语义等价）—— 改为"同数据源 + PTX 指令级抽查"
 
-**M3 关键发现（v0.0.3-alpha 再次修正）**：catalog 1025 条中 329 条走真 NVVM intrinsic；689 条在 cuda-oxide 里靠 LLVM inline PTX 降落。最初误判"Zig asm 无操作数替换、不可映射"——真相是 Zig 支持 `%[name]` 具名操作数替换（位置形式 `$0`/`%0`/`${0}` 不支持）。生成器把 probe 的位置模板重写为具名形式后，asm 类已有 618 条生成（`src/gen/instrinsics_asm.zig`），含 mma.sync 多输出；剩余未映射主因是 zig asm 操作数上限（≤15 输出 / ≤31 输入，tcgen05.ld 等超宽指令受阻）。
+**M3 关键发现（v0.0.3-alpha 再次修正）**：catalog 1025 条中 329 条走真 NVVM intrinsic；689 条在 cuda-oxide 里靠 LLVM inline PTX 降落。最初误判"Zig asm 无操作数替换、不可映射"——真相是 Zig 支持 `%[name]` 具名操作数替换（位置形式 `$0`/`%0`/`${0}` 不支持）。生成器把 probe 的位置模板重写为具名形式后，asm 类已有 618 条生成（`src/gen/intrinsics_asm.zig`），含 mma.sync 多输出；剩余未映射主因是 zig asm 操作数上限（≤15 输出 / ≤31 输入，tcgen05.ld 等超宽指令受阻）。
 
 验收：生成覆盖率 ≥ catalog 的 90%；抽样 100 个 intrinsics 编译通过。——修正为：**可映射子集（NVVM intrinsic 类）覆盖 100%**（329/329）；2026-09-25 起以 catalog `id` 匹配为准，总覆盖 **943/1025（92%）**，剩余 82 条全部为 asm 超宽受限项（归入 port-plan P2）。每个 family 有 smoke kernel + CI PTX grep 断言（cpasync_mbar / ldmatrix / warpops / packed / atomics / math）。
 
@@ -125,7 +125,7 @@ kernel.zig → PTX（NVPTX 后端）→ ptxas 编排 → doctor。**结论：路
 
 ## 五、已知 Zig 0.16 NVPTX 陷阱（M0 踩坑记录）
 
-1. **asm 模板的操作数替换：位置形式不支持，具名形式支持**。`$0`/`%0`/`${0}`/`$[name]` 全部原样输出到 PTX（ptxas 报 "Unknown symbol '$0'"）；正确的 Zig 形式是 **`%[name]` 具名操作数**：`asm ("mov.u32 \t%[r], %tid.x;" : [r] "=r" (-> u32))` ✓ 已验证。Zig 推荐的 `{reg}` 约束在 NVPTX 不可用（无具名物理寄存器）。设备端库优先走 **LLVM NVVM intrinsics**（`extern fn @"llvm.nvvm.read.ptx.sreg.tid.x"() i32`，类型最安全）；无 intrinsic 的指令走生成器转换的具名 asm（`src/gen/instrinsics_asm.zig`）。限制：asm 输出 ≤15 / 输入 ≤31（AstGen 硬性上限）。注意 `@"llvm.*"` 调用是 ziglang/zig#2291 记录的意外暴露，未来 zig 版本可能收紧。
+1. **asm 模板的操作数替换：位置形式不支持，具名形式支持**。`$0`/`%0`/`${0}`/`$[name]` 全部原样输出到 PTX（ptxas 报 "Unknown symbol '$0'"）；正确的 Zig 形式是 **`%[name]` 具名操作数**：`asm ("mov.u32 \t%[r], %tid.x;" : [r] "=r" (-> u32))` ✓ 已验证。Zig 推荐的 `{reg}` 约束在 NVPTX 不可用（无具名物理寄存器）。设备端库优先走 **LLVM NVVM intrinsics**（`extern fn @"llvm.nvvm.read.ptx.sreg.tid.x"() i32`，类型最安全）；无 intrinsic 的指令走生成器转换的具名 asm（`src/gen/intrinsics_asm.zig`）。限制：asm 输出 ≤15 / 输入 ≤31（AstGen 硬性上限）。注意 `@"llvm.*"` 调用是 ziglang/zig#2291 记录的意外暴露，未来 zig 版本可能收紧。
 2. `export fn` + kernel callconv 会触发 LLVM alias bug（"NVPTX aliasee must be a non-kernel function definition"）。变通：`pub fn ... callconv(.kernel)` + 有函数体的 dummy export 物化 kernel 指针；PTX 中符号名带 `kernel_$_` 前缀，host 端 `cuModuleGetFunction` 需用该名。
 3. 需 `.strip = true` / `-fstrip`，否则 PTX `.target` 行带 `, debug` 后缀。
 4. `bundle_ubsan_rt = false`（UBSan runtime 同样触发 alias bug）。

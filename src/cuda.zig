@@ -20,7 +20,7 @@ pub const warp_size = 32;
 /// Generated NVVM intrinsic bindings (see `zoxide gen`).
 pub const gen = @import("gen/intrinsics.zig");
 /// Generated asm-template bindings (named-operand inline asm).
-pub const asm_gen = @import("gen/instrinsics_asm.zig");
+pub const asm_gen = @import("gen/intrinsics_asm.zig");
 /// Hopper warpgroup MMA (`wgmma.mma_async`). Requires sm_90a; hand-written
 /// asm because LLVM has no mma_async intrinsic.
 pub const wgmma = @import("wgmma.zig");

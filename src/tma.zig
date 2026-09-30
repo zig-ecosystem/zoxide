@@ -12,7 +12,7 @@
 //! (shared to global) and the `reduce_*` variants. The direction a GEMM needs,
 //! `g2s`, has no intrinsic, so the generator produced none either:
 //!
-//!     $ grep -c g2s src/gen/intrinsics.zig src/gen/instrinsics_asm.zig
+//!     $ grep -c g2s src/gen/intrinsics.zig src/gen/intrinsics_asm.zig
 //!     0
 //!     0
 //!

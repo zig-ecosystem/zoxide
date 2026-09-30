@@ -2,7 +2,7 @@ const cuda = @import("cuda");
 const gen = cuda.gen;
 const asmgen = cuda.asm_gen;
 
-/// Smoke test for asm-template-generated bindings (src/gen/instrinsics_asm.zig):
+/// Smoke test for asm-template-generated bindings (src/gen/intrinsics_asm.zig):
 /// exercises single-output asm (abs.bf16x2), packed u64 asm (mul.rn.f32x2),
 /// multi-output asm (mma.sync.aligned.m16n8k16), plus one intrinsic (prmt)
 /// for contrast.

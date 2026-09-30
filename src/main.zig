@@ -82,6 +82,10 @@ fn usage() void {
         \\usage:
         \\  zoxide ptx <kernel.zig> -o out.ptx [--arch sm_XX]     compile Zig source to PTX via zig (default {s})
         \\  zoxide cubin <in.ptx> -o out.cubin [--arch sm_XX]     assemble PTX via ptxas (default {s})
+        \\  zoxide bench <kernel.ptx|name> [--n N] [--iters K] [--arch sm_XX] [--maxrregcount N]
+        \\                                                       GEMM bench: event timing + CPU-reference check
+        \\  zoxide gen <cuda-oxide/intrinsics> [-o src/gen/intrinsics.zig]
+        \\                                                       regenerate the intrinsics bindings
         \\  zoxide new <name> [--dir path] [--zoxide-path dir]    scaffold a host+device package
         \\  zoxide doctor [--arch sm_XX]                          probe zig / nvptx / ptxas / libNVVM / GPU
         \\  zoxide run <example.ptx|.cubin> [--kernel name] [--n N] [--grid G --block B] [--arch sm_XX]
@@ -365,7 +369,7 @@ fn assemblePtx(gpa: std.mem.Allocator, io: std.Io, env: *std.process.Environ.Map
 }
 
 /// Version tag the scaffold points at for `zig fetch --save`. Bump with releases.
-const scaffold_version = "v0.0.12-alpha";
+const scaffold_version = "v0.0.14-alpha";
 
 fn cmdNew(gpa: std.mem.Allocator, io: std.Io, env: *std.process.Environ.Map, args: []const [:0]const u8) !u8 {
     var na: scaffold.NewArgs = .{ .name = "", .version = scaffold_version };
