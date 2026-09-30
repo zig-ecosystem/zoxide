@@ -190,6 +190,7 @@ SGEMM (C = A·B, square f32) harness with CUDA event timing:
 ./zoxide bench hgemm_bf16.ptx --n 4096 --iters 10   # bf16 mma.sync m16n8k16 (hgemm_mma2 shape, u16 storage)
 ./zoxide bench imma_s8.ptx --n 4096 --iters 10      # int8 mma.sync m16n8k32, s32 accumulators
 ./zoxide bench imma_s4.ptx --n 4096 --iters 10      # int4 mma.sync m16n8k64, packed 2-per-byte
+./zoxide bench hgemm_sp.ptx --n 4096 --iters 10     # 2:4 sparse fp16 mma.sp m16n8k16 + metadata
 ```
 
 - `sgemm_naive.zig`: one thread per C element, direct global loads (baseline).
@@ -258,6 +259,17 @@ reg 15319 (34.8%) of the ~44 TFLOPS FP32 peak; reg verified at n=4000
   over the full [-8, 7] range. Peak percentage is printed against an
   *assumed* 2x-INT8 ceiling — no H20 INT4 figure exists in the repo's spec
   sources. PTX-complete; GPU run parked.
+- `hgemm_sp.zig`: 2:4-structured-sparse f16 mma
+  (`mma.sp::ordered_metadata.m16n8k16.f32.f16.f16.f32` — the only f16 sparse
+  form with a generated wrapper; plain `mma.sp.sync` f16 is not in src/gen).
+  A is stored pruned (2 of every 4 k kept, half width) plus a u16 metadata
+  word per row per 16 k (bit layout contracted in `examples_abi.hgemm_sp`);
+  the pruned A still loads through ldmatrix (plain .x2 — the row is half as
+  wide), B is dense and keeps the .x2.trans path. The host prunes A itself
+  and verifies against a dense CPU reference *of the pruned matrix* with
+  exact-integer inputs, so a wrong metadata bit order is a hard FAIL on
+  first GPU run. Peak percentage is printed against an assumed 2x-dense
+  sparse ceiling. PTX-complete; GPU run parked.
 ![HGEMM progression on H20](docs/assets/hgemm-progression.svg)
 
 - `hgemm_wgmma.zig`: Hopper warpgroup MMA. 86.3 TFLOPS (54.3% of FP16 tensor

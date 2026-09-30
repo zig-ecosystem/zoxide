@@ -71,6 +71,10 @@
     - fp8(e4m3/e5m2)未做:catalog 标 minimum_sm 89,sm_90a 是否接受有争议(CUTLASS 在 Hopper 上 FP8 走 wgmma),留待单独评估。
   - fp8 形状:`mma.sync m16n8k16` 的 fp8 变体 catalog 已有 8 条(e4m3/e5m2 × f16/f32 累加),但 **sm_90 上的可用性有架构疑问**,留后处理,不与 int8 合并推进。int4/f6/f4 未动。
 - [ ] **sparse mma**:catalog 有条目,等 P2 mma 基建成熟后按同一模式生成。
+  - 进展(2026-09-30):**f16 sparse 完成(PTX 级)**——`hgemm_sp`,`mma.sp::ordered_metadata.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32`。选型说明:src/gen 中**没有** plain `mma.sp.sync` 的 f16 封装(32 条 plain 条目全是 u4/s4/u8/s8 整数形),f16 sparse 只有 ordered_metadata 形;sm_80 起步,H20 可验证。
+    - 关键事实(A fragment 与 metadata 读取,按 PTX ISA 解读,已写入 kernel 注释,真机首跑由精确比对证伪):A 以"已剪枝"形式存储(每 4 个 k 保 2,行宽减半 = 8 f16/16B),A fragment 每 lane 2 个 .b32(行 g 的 k-group t 两个保留值 + 行 g+8 同位),plain `ldmatrix.x2` 可直接加载(无需 dense 的 x4);B 保持 dense,沿用 `.x2.trans` 路径;metadata 每 mma 一个 32 位寄存器,由 selector 立即数选中的 lane 提供(取 0),低 16 位 = 行 g、高 16 位 = 行 g+8,行内 k-group j 占半字节 [4j+3:4j](低 2 位 = 第一个保留下标,高 2 位 = 第二个)。
+    - 正确性口径:host 自行剪枝 A(伪随机 6 选 2 组合),参考为**剪枝后矩阵**的 dense CPU matmul,输入小整数精确 → 实际等价于零容差;metadata 位序/lane 读错会在首跑硬 FAIL。峰值按"sparse = 2× dense = 296 TFLOPS"假设标注(同 imma_s4 的处理)。
+    - 验证:64 条 mma.sp、8 条 plain ldmatrix.x2、16 条 x2.trans、16 条 metadata 的 ld.shared.b16、2 条 bar.sync、无残留、无 st.local;CI 断言已加。int8/int4 sparse 形状未做,同模式可续。
 - [ ] **tcgen05(Blackwell)**:仅当拿到 sm_100 真机才排期。`.reg` 绕法已验证可行,但 spill 代价数据(wgmma4 首跑会产出)决定这条路值不值得走。当前标注 blocked-on-hardware。
 
 ## P3 — 工程化(v1.0 稳定化前置)

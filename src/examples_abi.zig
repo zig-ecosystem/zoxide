@@ -46,6 +46,19 @@ pub fn packS4(even: i8, odd: i8) u8 {
     return (@as(u8, @bitCast(even)) & 0xF) | ((@as(u8, @bitCast(odd)) & 0xF) << 4);
 }
 
+/// `hgemm_sp`: 2:4-structured-sparse f16 mma
+/// (`mma.sp::ordered_metadata.m16n8k16.f32.f16.f16.f32`). `a` is the pruned A
+/// (n/2 kept f16 per row, kept elements in k order), `meta` one u16 per row
+/// per 16 dense k (n/16 words per row) with the bit layout below, `b` dense,
+/// `n` the *dense* element count per row.
+///
+/// Metadata contract (the kernel reads it the same way): within a u16,
+/// k-group j (dense k 4j..4j+3) owns nibble [4j+3 : 4j]; the low 2 bits of
+/// the nibble are the index of the first kept element, the high 2 bits the
+/// second. On the device the row-g word goes to the low 16 bits of the
+/// metadata register and the row-(g+8) word to the high 16.
+pub const hgemm_sp = fn (a: [*]const f16, b: [*]const f16, meta: [*]const u16, c: [*]f32, n: u32) void;
+
 /// Shape of the `const_vs_ldg` comparison, shared because the harness computes
 /// the expected result from it.
 ///

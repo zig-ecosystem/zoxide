@@ -144,6 +144,21 @@ jobs:
           test "$(grep -c 'bar\.sync' imma_s4.ptx)" -eq 2
           grep -q '\.target sm_9' imma_s4.ptx
           if grep -q 'st\.local' imma_s4.ptx; then echo "imma_s4: spilled to local memory"; exit 1; fi
+          # hgemm_sp: 2:4 sparse f16 mma. A is pruned to half width, so its
+          # fragment load is the plain x2 ldmatrix (8x = 4 m-tiles x 2
+          # pipeline instances); B is dense and keeps the x2.trans path.
+          # The metadata path shows up as scalar u16 shared loads (2 per
+          # m-tile per instance = 16).
+          test "$(grep -c 'mma\.sp::ordered_metadata\.sync\.aligned\.m16n8k16\.row\.col\.f32\.f16\.f16\.f32' hgemm_sp.ptx)" -eq 64
+          test "$(grep -c 'ldmatrix\.sync\.aligned\.m8n8\.x2\.shared\.b16' hgemm_sp.ptx)" -eq 8
+          grep -q 'ldmatrix\.sync\.aligned\.m8n8\.x2\.trans' hgemm_sp.ptx
+          test "$(grep -c 'ld\.shared\.b16\|ld\.shared\.u16' hgemm_sp.ptx)" -eq 16
+          grep -q 'cp\.async\.cg\.shared\.global' hgemm_sp.ptx
+          grep -q 'cp\.async\.wait_group' hgemm_sp.ptx
+          if grep -qE '\$[0-9]|%\[' hgemm_sp.ptx; then echo "hgemm_sp: unsubstituted operand"; exit 1; fi
+          test "$(grep -c 'bar\.sync' hgemm_sp.ptx)" -eq 2
+          grep -q '\.target sm_9' hgemm_sp.ptx
+          if grep -q 'st\.local' hgemm_sp.ptx; then echo "hgemm_sp: spilled to local memory"; exit 1; fi
           # wgmma kernels: sm_90a target, RS vs SS operand forms, pipeline depth.
           for f in wgmma_smoke hgemm_wgmma hgemm_wgmma2 hgemm_wgmma3; do
             grep -q '\.target sm_90a' "$f.ptx" || { echo "$f: not built for sm_90a"; exit 1; }
