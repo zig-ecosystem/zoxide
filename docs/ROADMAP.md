@@ -20,8 +20,8 @@
 
 - P0（在途收尾）= TMA S0 真机验证 + `hgemm_wgmma4` 真机跑 —— 都还没做，且都**只差一次 GPU 环境**
 - P1（intrinsics 广度 + 数学库）= 已完成，见下方「已完成但未发版」
-- P2（TMA 补全 + 加速器面）= 进行中，mma 形状扩展做到 int8
-- P3（工程化）= 对应本文 v1.0.0 之前的工程化项
+- P2（TMA 补全 + 加速器面）= 已完成（PTX 级）：mma 形状 bf16/int8/int4/sparse 全落地，TMA s2g + prefetch + g2s 全 rank 补齐;multicast 随 cluster 挂起,tcgen05 需 Blackwell
+- P3（工程化）= 已完成或 blocked-on-hardware：lint/census、sanitize/debug、launch_bounds、artifact 嵌入、async 运行时落地;差分验证与 arch 矩阵需 GPU/非 sm_90 硬件
 
 新增能力请先改 port-plan，本文在发版时回填。
 
@@ -43,9 +43,9 @@
 | v0.0.13-alpha | 设备全局变量（host 写、device 按名读）：`cuda.ldg()` 绕开常量折叠，H20 实测 1024/1024 精确；两次反向对照，其中一次否掉了自己加的 PTX 后处理 |
 | v0.0.14-alpha | 真正的 constant memory（`.const` 存储体，模块级 inline asm 发声明）：H20 实测 4096/4096 精确，并**证伪**「广播缓存所以更快」——uniform 持平（1.02x），发散慢 3.3× |
 
-## 已完成但未发版（2026-09-25 → 09-29）
+## 已完成但未发版（2026-09-25 → 09-30）
 
-这批工作按 port-plan 的 P1/P2 推进，尚未归入版本号。详细完成定义与逐条结论在
+这批工作按 port-plan 的 P1/P2/P3 推进，尚未归入版本号。详细完成定义与逐条结论在
 `docs/cuda-oxide-port-plan.md`，此处只记结论。
 
 | 工作 | 结论 | 证据层级 |
@@ -55,9 +55,21 @@
 | **TMA S1 bisect** | 三轮 bisect（`tma-s1c/s1d/tma-bisect` tag）定位到 mbarrier 等待时序；修了一个 asm 寄存器别名 bug | 代码级 |
 | **bf16 mma 形状** | `hgemm_bf16`，`mma.sync m16n8k16 bf16`，bench 变体 + CI 断言 | PTX 级 |
 | **int8 mma 形状** | `imma_s8`，`mma.sync m16n8k32 s32.s8.s8.s32`，精确整数校验；订正了「sm_75 即支持」（实为 **sm_80**）；确认 B fragment 无法走 ldmatrix 是指令层面固有不匹配 | PTX 级 |
+| **int4 mma 形状** | `imma_s4`，`mma.sync m16n8k64 s32.s4.s4.s32`，每字节两个值打包（`packS4` 一处定义防漂移），精确整数校验；H20 无 INT4 官方数字,峰值按 2×INT8 假设并标注 | PTX 级 |
+| **sparse mma 形状** | `hgemm_sp`，`mma.sp::ordered_metadata m16n8k16 f16`（plain `mma.sp` 的 f16 形无生成物,这是唯一可用形）；2:4 剪枝 + metadata 位序写入 abi 契约,host 以剪枝后矩阵做精确参考,位序读错首跑即硬 FAIL | PTX 级 |
+| **TMA s2g smoke** | `tma_s2g_smoke`：g2s 进 shared → 生成物 s2g wrapper 写回另一 tensor,host 全量比对(瓦片精确 + 哨兵区完好);记录完成机制差异——s2g 无 mbarrier,走 bulk commit/wait_group | PTX 级 |
+| **TMA prefetch 补全** | 6 条「缺失」实为 plain/cache_hint 共用同一 NVVM intrinsic 的命名假象;5 个维度薄 wrapper 按 flag 选择,gather4 的 intrinsic 不 lower(残留 extern),2 条手写 asm | PTX 级 |
+| **TMA g2s 全 rank** | `load1D/4D/5D` 手写 asm 补齐(2d/3d 已有);1d/4d/5d 为编译级覆盖 | PTX 级 |
+| **mbarrier wrapper 地址收窄** | 根因 = probes 的 "l" 约束不携带地址空间;gen.zig 加 shared 地址 → u32 规则,6+1 条 wrapper 收窄,PTX 仅寄存器类从 %rd 变 %r | PTX 级 |
+| **PTX lint + census** | `src/ptx.zig` 无损文本视图(往返逐字节一致,38 份 kernel PTX 回归)+ `zoxide lint [--census]`;bench 资源占用本就走 driver attr,首个内部消费者为 census(地址运算统计自动化) | 本机 |
+| **sanitize / debug 子命令** | compute-sanitizer / cuda-gdb 薄封装,probe 顺序与 ptxas 同源,exec 透传 exit code;probe/argv 组装有单测,exec 路径用假 binary 验证 | 本机(真工具未装) |
+| **launch_bounds 等价物** | `kernel_abi.LaunchBounds` 结构化契约;设备侧 `cuda.launchBounds` 以 inline asm 发 `.maxntid`/`.minnctapersm`/`.maxnreg` 进 `.entry` body(机制经实验验证);宿主侧 checkGeometry 违例点名契约 | PTX 级 + 宿主单测 |
+| **artifact 嵌入** | `-Dembed-kernels`(默认开):38 个 kernel 的 PTX 编进 zoxide 二进制,裸 stem 即可 run/bench/lint,显式路径优先,路径形输入永不回退 | 本机 |
+| **async 运行时** | `src/async.zig` 刻意做薄:Operation 值 + Builder arena + `.sync()`(issue 有序 + 每流 sync 一次);无 futures/DAG;跨流等待因无 `cuStreamWaitEvent` 绑定而明确不做 | 本机(图簿记有单测,执行挂 GPU) |
 
-**这批全部是 PTX 级验证，无一条有真机数字**——本机无 CUDA 工具链，`ptxas` 都没跑过，
-所以寄存器分配/溢出/occupancy 一律未检。真机门统一挂在 P0 的 GPU 环境上。
+**这批里没有一条有真机数字**——PTX 级项全部未经 ptxas/真机(本机无 CUDA 工具链),
+寄存器分配/溢出/occupancy 一律未检;「本机」级项( lint / sanitize / embed / async )
+是宿主侧验证,不经 GPU。真机门统一挂在 P0 的 GPU 环境上。
 
 ## 已发版本的详细记录与残留项
 
