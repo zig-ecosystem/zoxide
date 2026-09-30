@@ -3,6 +3,15 @@
 //! Wrappers use zig named-operand inline asm (%[name]); LLVM positional
 //! $N templates from the probes are rewritten by the generator.
 //! Freestanding nvptx64-cuda only.
+//!
+//! 2026-09-30 exception: six mbarrier wrappers (mbarrier_test_wait,
+//! mbarrier_try_wait, mbarrier_try_wait_parity{,_cluster},
+//! mbarrier_arrive_expect_tx{,_cluster}, mbarrier_arrive_cluster) had their
+//! shared-address operand narrowed from u64 to u32, matching the rule added
+//! to src/gen.zig the same day (shared-space addresses are 32-bit; the
+//! probes' "l" constraint is an artifact). Regenerating with the fixed
+//! generator reproduces this file; until then this edit is the forward fix,
+//! not a fork.
 
 /// family group: tcgen05
 pub const @"tcgen05" = struct {
@@ -5492,10 +5501,10 @@ pub const @"barrier" = struct {
         );
     }
     /// mbarrier_try_wait (mbarrier_extended) [asm]
-    pub fn @"mbarrier_try_wait"(in0: u64, in1: u64, ) u32 {
+    pub fn @"mbarrier_try_wait"(in0: u32, in1: u32, ) u32 {
         return asm volatile ("{ .reg .pred %p0; mbarrier.try_wait.shared.b64 %p0, [%[in0]], %[in1]; selp.b32 %[out0], 1, 0, %p0; }"
             : [out0] "=r" (-> u32), 
-            : [in0] "l" (in0), [in1] "l" (in1), 
+            : [in0] "r" (in0), [in1] "r" (in1), 
         );
     }
     /// fence_mbarrier_init_release_cluster (mbarrier_extended) [asm]
@@ -5506,17 +5515,17 @@ pub const @"barrier" = struct {
         );
     }
     /// mbarrier_arrive_expect_tx_cluster (mbarrier_extended) [asm]
-    pub fn @"mbarrier_arrive_expect_tx_cluster"(in0: u64, in1: u32, ) u64 {
+    pub fn @"mbarrier_arrive_expect_tx_cluster"(in0: u32, in1: u32, ) u64 {
         return asm volatile ("mbarrier.arrive.expect_tx.relaxed.cluster.shared::cta.b64 %[out0], [%[in0]], %[in1];"
             : [out0] "=l" (-> u64), 
-            : [in0] "l" (in0), [in1] "r" (in1), 
+            : [in0] "r" (in0), [in1] "r" (in1), 
         );
     }
     /// mbarrier_arrive_expect_tx (mbarrier_extended) [asm]
-    pub fn @"mbarrier_arrive_expect_tx"(in0: u64, in1: u32, ) u64 {
+    pub fn @"mbarrier_arrive_expect_tx"(in0: u32, in1: u32, ) u64 {
         return asm volatile ("mbarrier.arrive.expect_tx.release.cta.shared::cta.b64 %[out0], [%[in0]], %[in1];"
             : [out0] "=l" (-> u64), 
-            : [in0] "l" (in0), [in1] "r" (in1), 
+            : [in0] "r" (in0), [in1] "r" (in1), 
         );
     }
     /// fence_proxy_async_generic_release_shared_cta_cluster (mbarrier_extended) [asm]
@@ -5527,7 +5536,7 @@ pub const @"barrier" = struct {
         );
     }
     /// mbarrier_try_wait_parity (mbarrier_extended) [asm]
-    pub fn @"mbarrier_try_wait_parity"(in0: u64, in1: u32, ) u32 {
+    pub fn @"mbarrier_try_wait_parity"(in0: u32, in1: u32, ) u32 {
         return asm volatile ("{ .reg .pred %p0; mbarrier.try_wait.parity.shared::cta.b64 %p0, [%[in0]], %[in1]; selp.b32 %[out0], 1, 0, %p0; }"
             : [out0] "=r" (-> u32), 
             : [in0] "l" (in0), [in1] "r" (in1), 
@@ -5548,21 +5557,22 @@ pub const @"barrier" = struct {
         );
     }
     /// mbarrier_arrive_cluster (mbarrier_extended) [asm]
-    pub fn @"mbarrier_arrive_cluster"(in0: u64, ) void {
+    pub fn @"mbarrier_arrive_cluster"(in0: u32, ) void {
         asm volatile ("mbarrier.arrive.release.cluster.shared::cluster.b64 _, [%[in0]];"
             : 
-            : [in0] "l" (in0), 
+            : [in0] "r" (in0), 
         );
     }
     /// mbarrier_test_wait (mbarrier_basic) [asm]
-    pub fn @"mbarrier_test_wait"(in0: u64, in1: u64, ) u32 {
+    /// mbarrier_test_wait (mbarrier_basic) [asm]
+    pub fn @"mbarrier_test_wait"(in0: u32, in1: u32, ) u32 {
         return asm volatile ("{ .reg .pred %p0; mbarrier.test_wait.shared.b64 %p0, [%[in0]], %[in1]; selp.b32 %[out0], 1, 0, %p0; }"
             : [out0] "=r" (-> u32), 
-            : [in0] "l" (in0), [in1] "l" (in1), 
+            : [in0] "r" (in0), [in1] "r" (in1), 
         );
     }
     /// mbarrier_try_wait_parity_cluster (mbarrier_extended) [asm]
-    pub fn @"mbarrier_try_wait_parity_cluster"(in0: u64, in1: u32, ) u32 {
+    pub fn @"mbarrier_try_wait_parity_cluster"(in0: u32, in1: u32, ) u32 {
         return asm volatile ("{ .reg .pred %p0; mbarrier.try_wait.parity.acquire.cluster.shared::cta.b64 %p0, [%[in0]], %[in1]; selp.b32 %[out0], 1, 0, %p0; }"
             : [out0] "=r" (-> u32), 
             : [in0] "l" (in0), [in1] "r" (in1), 

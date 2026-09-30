@@ -31,8 +31,8 @@
 //!
 //! Shared-memory operands in `.shared::cta` are addresses in the shared window,
 //! which is 32-bit. Same convention as `wgmma.smemAddr`: truncate the pointer.
-//! The generated `mbarrier_*` wrappers in `src/gen` take `u64` for these, which
-//! is why this module does not use them.
+//! The generated `mbarrier_*` asm wrappers follow the same rule (src/gen.zig
+//! narrows bracketed shared-address operands to u32).
 const cuda = @import("cuda.zig");
 
 /// Shared-memory address as the hardware wants it: 32-bit offset into the shared

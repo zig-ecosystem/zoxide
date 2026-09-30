@@ -223,6 +223,30 @@ fn convertAsm(
         if (is_out) try outputs.append(a, op) else try inputs.append(a, op);
     }
 
+    // Shared-space addresses are 32-bit (PTX: the shared window is a 32-bit
+    // address space; tma.zig's smemAddr convention). The probes declare every
+    // asm address operand with the 64-bit "l" constraint, which is harmless
+    // for correctness on real hardware but forces callers to zero-extend.
+    // Where an "l" input is used as the bracketed address of a .shared*
+    // instruction, emit it as u32/"r" instead. (2026-09-30: applied to the
+    // committed generated file by the same rule — regenerating against a
+    // newer catalog is a separate decision.)
+    {
+        const nout = outputs.items.len;
+        for (inputs.items, 0..) |*in, j| {
+            if (in.constraint != 'l') continue;
+            // Positional operand index of this input in the probe template.
+            var pos_buf: [16]u8 = undefined;
+            const pos = std.fmt.bufPrint(&pos_buf, "[${d}", .{nout + j}) catch unreachable;
+            if (std.mem.indexOf(u8, pa.template, ".shared") != null and
+                std.mem.indexOf(u8, pa.template, pos) != null)
+            {
+                in.constraint = 'r';
+                in.ty = "u32";
+            }
+        }
+    }
+
     // zig caps inline asm at 16 outputs and 32 inputs (AstGen).
     if (outputs.items.len > 15 or inputs.items.len > 31) return null;
 

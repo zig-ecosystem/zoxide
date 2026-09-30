@@ -37,7 +37,7 @@
 
 分批(每批 = 一个 alpha 版本)——**2026-09-25 全部完成**(无 GPU,验收=编译+PTX 断言):
 
-- [x] **P1a:async copy + mbarrier**——35/35 过编译且入 PTX(`cpasync_mbar_smoke.ptx`)。发现:asm 侧 mbarrier wrapper 收 u64 地址,smoke 侧零扩展适配,真机用前生成器应改 u32。
+- [x] **P1a:async copy + mbarrier**——35/35 过编译且入 PTX(`cpasync_mbar_smoke.ptx`)。发现:asm 侧 mbarrier wrapper 收 u64 地址,smoke 侧零扩展适配,真机用前生成器应改 u32。**已修(2026-09-30)**:根因是 probes 对 asm 地址操作数一律用 "l"(64 位)约束,而 PTX shared 窗口是 32 位;gen.zig 加了规则(`.shared` 指令里作 `[addr]` 的 "l" 输入 → u32/"r"),6 条 mbarrier wrapper + test_wait/try_wait 的 hint 操作数已在提交文件中按同一规则收窄(目录数据不在仓库内,完整 regen 属另一决策,头部有例外注释);PTX 同一指令、地址寄存器由 %rd 变 %r,cpasync smoke 的零扩展 shim 已删,tma.zig 的过时注释已订正。
 - [x] **P1b:ldmatrix/stmatrix/movmatrix**——ldmatrix 18/18 + movmatrix 1/1;**stmatrix 4 条 LLVM NVPTX 不 lower**,手写 asm 覆盖(`ldmatrix_smoke.ptx`,sm_100a);ldmatrix b8/b8x16 需 sm_100a(sm_90a 上 Cannot select)。
 - [x] **P1c:warp 级补全**——36/38(redux 16、vote 4、shuffle 12、match 2/4、activemask、bar.warp.sync,`warpops_smoke.ptx`);**match.all 2 条**因 {i32,i1} 聚合返回 LLVM 不支持不可用;f32 redux 需 sm_100a。
 - [x] **P1d:packed 类型与转换**——127/127(packed_alu/conversion/atomic、dotprod、prmt、clc、minmax 全家,`packed_smoke.ptx`);dp2a 的 2 条 LLVM 无选择模式,手写 asm 覆盖。

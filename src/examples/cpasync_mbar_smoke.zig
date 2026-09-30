@@ -63,11 +63,9 @@ pub fn cpAsyncSmoke(src: [*]const u8, diag: [*]u32) callconv(.kernel) void {
 pub fn mbarGenSmoke(src: [*]const u8, diag: [*]u32) callconv(.kernel) void {
     _ = src;
     const bar = barPtr();
-    // The asm wrappers take the mbarrier address as u64 (src/tma.zig's header
-    // documents why that signature is a poor fit — shared addresses are 32-bit,
-    // which is why tma.zig does not use them). Usable here by passing the
-    // zero-extended 32-bit shared offset; only PTX emission is asserted.
-    const addr: u64 = @intFromPtr(&bar_mem[0]);
+    // The asm wrappers take the mbarrier address as u32 — the shared window
+    // is a 32-bit address space (same convention as tma.zig's smemAddr).
+    const addr: u32 = @truncate(@intFromPtr(&bar_mem[0]));
 
     // mbarrier_basic: NVVM init/arrive/arrive.noComplete/inval + asm test_wait.
     gen.barrier.mbarrier_init(bar, 1);
