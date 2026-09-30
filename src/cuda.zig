@@ -37,6 +37,64 @@ pub const math = @import("math.zig");
 /// kernel's parameters without updating the host is a compile error here.
 pub const abi = @import("kernel_abi.zig");
 
+/// Launch bounds declared on a kernel signature; see kernel_abi.zig.
+pub const LaunchBounds = abi.LaunchBounds;
+
+fn itoaComptime(comptime v: u32) []const u8 {
+    comptime {
+        if (v == 0) return "0";
+        var buf: [10]u8 = undefined;
+        var n = v;
+        var i: usize = buf.len;
+        while (n != 0) {
+            i -= 1;
+            buf[i] = '0' + @as(u8, @intCast(n % 10));
+            n /= 10;
+        }
+        return buf[i..] ++ "";
+    }
+}
+
+/// Emit the PTX performance directives for a declared launch-bounds contract
+/// (`.maxntid` / `.minnctapersm` / `.maxnreg`) into the enclosing kernel's
+/// `.entry` body.
+///
+/// Mechanism: Zig exposes no function attribute that reaches PTX, but inline
+/// asm text is emitted verbatim, and these directives are legal anywhere in
+/// an entry body. LLVM does not hoist the asm above the parameter loads
+/// (verified in the emitted PTX: it lands after the ld.param/cvta prologue,
+/// ahead of all computational instructions), which is legal placement — but
+/// call it first anyway, so the emitted order stays stable. The `.memory`
+/// clobber keeps it from moving past memory operations.
+///
+/// Pass the shared declaration's bounds so device and host cannot drift:
+///
+/// ```zig
+/// pub fn myKernel(...) callconv(.kernel) void {
+///     cuda.launchBounds(api.my_kernel.launch_bounds);
+///     ...
+/// }
+/// ```
+pub inline fn launchBounds(comptime lb: anytype) void {
+    // `lb` may be a typed LaunchBounds or an anonymous struct from a shared
+    // abi module; normalize through the structural reader.
+    const text = comptime blk: {
+        const b = abi.boundsOf(struct {
+            pub const launch_bounds = lb;
+        }) orelse abi.LaunchBounds{};
+        var parts: []const u8 = "";
+        if (b.max_threads) |t|
+            parts = parts ++ "\t.maxntid " ++ itoaComptime(t) ++ ";\n";
+        if (b.min_blocks_per_sm) |m|
+            parts = parts ++ "\t.minnctapersm " ++ itoaComptime(m) ++ ";\n";
+        if (b.max_registers) |r|
+            parts = parts ++ "\t.maxnreg " ++ itoaComptime(r) ++ ";\n";
+        break :blk parts;
+    };
+    if (text.len == 0) return;
+    asm volatile (text ::: .{ .memory = true });
+}
+
 // --- printf ---
 //
 // LLVM removed the llvm.nvvm.vprintf intrinsic; the NVPTX backend instead

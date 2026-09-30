@@ -24,7 +24,15 @@ pub const hgemm = fn (a: [*]const f16, b: [*]const f16, c: [*]f32, n: u32) void;
 
 /// `hgemm_bf16`: the bf16 mma shape. bf16 has no native Zig type, so inputs
 /// are u16 bit patterns; f32 accumulation, same as the f16 family.
-pub const hgemm_bf16 = fn (a: [*]const u16, b: [*]const u16, c: [*]f32, n: u32) void;
+///
+/// Also the launch-bounds demonstration: the kernel is written for exactly
+/// 128 threads (4 warps, no bounds guards), so the contract says so —
+/// `cuda.launchBounds` emits `.maxntid 128` into the PTX and the host launch
+/// validates against it.
+pub const hgemm_bf16 = struct {
+    pub const signature = fn (a: [*]const u16, b: [*]const u16, c: [*]f32, n: u32) void;
+    pub const launch_bounds = .{ .max_threads = 128 };
+};
 
 /// `imma_s8`: the int8 tensor-core shape, `mma.sync.m16n8k32.s32.s8.s8.s32`.
 /// Unlike the f16/bf16 family this one is integer end to end — `i8` inputs and

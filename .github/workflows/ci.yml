@@ -113,6 +113,14 @@ jobs:
           grep -q 'cp\.async\.wait_group' hgemm_bf16.ptx
           if grep -qE '\$[0-9]|%\[' hgemm_bf16.ptx; then echo "hgemm_bf16: unsubstituted operand"; exit 1; fi
           test "$(grep -c 'bar\.sync' hgemm_bf16.ptx)" -eq 2
+          # hgemm_bf16 declares launch bounds (max_threads = 128, one per the
+          # abi contract); cuda.launchBounds must emit the directive into the
+          # entry body. Placement inside the body (not before .entry) is what
+          # makes it legal PTX.
+          grep -q '\.maxntid 128;' hgemm_bf16.ptx
+          ent=$(grep -n '\.entry' hgemm_bf16.ptx | head -1 | cut -d: -f1)
+          mb=$(grep -n '\.maxntid' hgemm_bf16.ptx | head -1 | cut -d: -f1)
+          [ "$mb" -gt "$ent" ] || { echo "hgemm_bf16: .maxntid outside entry body"; exit 1; }
           # imma_s8: int8 mma shape, s8 inputs and s32 accumulators. Same tiling
           # and cp.async pipeline as hgemm_bf16, so the counts match; the
           # difference is the B path, which has no ldmatrix (see the kernel doc

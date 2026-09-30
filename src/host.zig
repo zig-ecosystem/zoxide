@@ -325,10 +325,11 @@ pub const Module = struct {
     inner: cu.Module,
     limits: Limits,
 
-    /// Look up a kernel and bind it to its signature. `Signature` is a function
-    /// type matching the kernel's Zig declaration, e.g.
-    /// `fn ([*]const f32, [*]f32, u32) callconv(.kernel) void`.
-    pub fn kernel(self: Module, comptime Signature: type, name: [:0]const u8) Error!Kernel(Signature) {
+    /// Look up a kernel and bind it to its declaration. `Decl` is either a
+    /// bare signature (`fn ([*]const f32, [*]f32, u32) void`) or a
+    /// `abi.WithBounds(sig, .{ ... })` contract; in the latter case
+    /// `checkGeometry` also validates against the declared launch bounds.
+    pub fn kernel(self: Module, comptime Decl: type, name: [:0]const u8) Error!Kernel(Decl) {
         const f = try self.inner.function(name);
         // A kernel's own thread ceiling is derived from its register use and can
         // be well below the device's, so it has to come from the function rather
@@ -343,12 +344,13 @@ pub const Module = struct {
     }
 };
 
-/// A kernel bound to its signature, so `launch` can check arguments.
-pub fn Kernel(comptime Signature: type) type {
+/// A kernel bound to its declaration, so `launch` can check arguments and
+/// geometry. `Decl` may be a bare fn type or an `abi.WithBounds` contract.
+pub fn Kernel(comptime Decl: type) type {
     // Spelled without `callconv(.kernel)`: that convention resolves per target
     // and is `unreachable` on host architectures, so the type is unspellable
     // here. Only the parameter list matters for launching.
-    const param_types = abi.paramTypes(Signature);
+    const param_types = abi.paramTypes(abi.signatureOf(Decl));
 
     // The value actually handed to cuLaunchKernel for each parameter: a device
     // address for pointer parameters, the value itself otherwise.
@@ -370,6 +372,12 @@ pub fn Kernel(comptime Signature: type) type {
         /// push below the device's.
         max_threads: u32,
         const Self = @This();
+
+        /// The declared launch contract, or null for a bare signature.
+        /// Comptime-known: declared bounds cost the launch path nothing when
+        /// absent, and a violation is a validation error naming the contract,
+        /// not a driver code.
+        pub const declared_bounds: ?abi.LaunchBounds = abi.boundsOf(Decl);
 
         pub const params = param_types;
 
@@ -431,6 +439,25 @@ pub fn Kernel(comptime Signature: type) type {
                     self.max_threads,      self.limits.max_threads_per_block,
                 }) catch "block too large for this kernel";
                 return false;
+            }
+            // The kernel's *declared* contract (abi.WithBounds): distinct from
+            // the driver-reported ceiling above, which is derived from register
+            // use. A contract violation is a source-level mistake — the launch
+            // contradicts what the kernel declares — so the message names the
+            // declaration, not the device.
+            if (declared_bounds) |lb| {
+                if (lb.max_threads) |mt| {
+                    if (threads > mt) {
+                        msg.* = std.fmt.bufPrint(buf, "block of {d} threads exceeds the kernel's declared launch bound (.maxntid {d})", .{ threads, mt }) catch "declared maxntid exceeded";
+                        return false;
+                    }
+                }
+                if (lb.grid_multiple_of) |gm| {
+                    if (grid.x % gm != 0) {
+                        msg.* = std.fmt.bufPrint(buf, "grid dim x is {d}, kernel's declared contract requires a multiple of {d}", .{ grid.x, gm }) catch "declared grid multiple violated";
+                        return false;
+                    }
+                }
             }
             const bd = [3]u32{ block.x, block.y, block.z };
             const gd = [3]u32{ grid.x, grid.y, grid.z };
@@ -628,4 +655,38 @@ test {
 test {
     // compute-sanitizer / cuda-gdb wrapper: probe order and argv assembly.
     std.testing.refAllDecls(@import("toolwrap.zig"));
+}
+
+test "declared launch bounds are validated and name the contract" {
+    const Decl = abi.WithBounds(fn ([*]f32) void, .{ .max_threads = 128, .grid_multiple_of = 4 });
+    const K = Kernel(Decl);
+    const k: K = .{
+        .inner = undefined,
+        .limits = .{
+            .max_threads_per_block = 1024,
+            .max_block = .{ 1024, 1024, 64 },
+            .max_grid = .{ 2147483647, 65535, 65535 },
+            .max_shared_per_block = 49152,
+        },
+        .max_threads = 1024, // driver would allow it; the contract does not
+    };
+    var buf: [256]u8 = undefined;
+    var msg: []const u8 = "";
+
+    // Within contract: fine.
+    try std.testing.expect(k.checkGeometry(.{ .x = 8 }, .{ .x = 128 }, 0, &msg, &buf));
+
+    // Block larger than the declared .maxntid — message names the declaration.
+    try std.testing.expect(!k.checkGeometry(.{ .x = 4 }, .{ .x = 256 }, 0, &msg, &buf));
+    try std.testing.expect(std.mem.indexOf(u8, msg, "declared launch bound (.maxntid 128)") != null);
+
+    // Grid not a multiple of the declared contract.
+    try std.testing.expect(!k.checkGeometry(.{ .x = 6 }, .{ .x = 64 }, 0, &msg, &buf));
+    try std.testing.expect(std.mem.indexOf(u8, msg, "multiple of 4") != null);
+
+    // A bare signature declares nothing and is validated only against limits.
+    const Bare = Kernel(fn ([*]f32) void);
+    try std.testing.expect(Bare.declared_bounds == null);
+    const kb: Bare = .{ .inner = undefined, .limits = k.limits, .max_threads = 1024 };
+    try std.testing.expect(kb.checkGeometry(.{ .x = 6 }, .{ .x = 256 }, 0, &msg, &buf));
 }

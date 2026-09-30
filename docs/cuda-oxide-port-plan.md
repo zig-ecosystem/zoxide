@@ -87,7 +87,10 @@
 - [x] **`zoxide sanitize` / `zoxide debug` 子命令**:封装 compute-sanitizer / cuda-gdb,doctor 分级模式照搬。(2026-09-30 落地,`src/toolwrap.zig` 两个子命令共享一条 probe+exec 路径:probe 顺序 PATH → $CUDA_HOME/bin → /usr/local/cuda/bin,与 ptxas 同源(findPtxas 已重构为调用共享 probe);参数逐字透传,`--` 可选;exec 用 `std.process.replace`,exit code 即工具的,cuda-gdb 保持交互。缺席行为照搬 cubin(报错点名探测位置,exit 1)而非 doctor 的 warn——子命令的全部职责就是这个工具。范围说明:未做"缺省命令推导"之类的糖。验证:probe 顺序与 argv 组装 4 个单测;exec 路径用假 binary 验证(找到、透传、exit 42 透传);真工具本机不存在,真实 exec 未验证。)
 - [ ] **artifact 嵌入 host 二进制**(对标 `#[cuda_module]` 的 oxide-artifacts):消除对外挂 .ptx 文件路径的依赖,是"下游包分发"形态的前提。
 - [ ] **async 运行时**(对标 cutile-rs cuda-async):惰性 DeviceOperation + `.sync()`。注意 cuda-oxide 本体已不含这部分(迁去 cutile-rs),对标边界以 crates.io 0.3.1 为准。
-- [ ] **`launch_bounds` 等价物**(对标 `#[launch_bounds]`/`#[launch_contract]`):把 bench 的 `--maxrregcount` 从 CLI 参数下沉为 kernel 签名上的 comptime 属性,与类型化 launch 校验合并。
+- [x] **`launch_bounds` 等价物**(对标 `#[launch_bounds]`/`#[launch_contract]`):把 bench 的 `--maxrregcount` 从 CLI 参数下沉为 kernel 签名上的 comptime 属性,与类型化 launch 校验合并。(2026-09-30 落地。
+  - **机制实验**(命令:`zig build-lib scratch.zig -target nvptx64-cuda -mcpu sm_90 -femit-asm`):Zig 无任何函数属性可达 PTX(grep std 无 maxntid/maxnreg);但 kernel 体内的 `asm volatile` 原样进 `.entry` body——`.maxntid 128;`/`.maxnreg 64;` 实测落入 body,位于 ld.param 前导之后、计算指令之前(合法位置;ptxas 接受性属真机挂起项)。module-scope asm 不可行(`.maxntid` 在 `.entry` 外不合法)。
+  - 落地:`kernel_abi.LaunchBounds`(max_threads / min_blocks_per_sm / max_registers / grid_multiple_of)+ 结构化读取(abi 模块声明普通字段即可,不 import kernel_abi——避免同一文件进两个 module 的编译冲突,此坑实测踩过);设备侧 `cuda.launchBounds(...)`(freestanding,自带 comptime itoa);宿主侧 `Module.kernel` 接受 WithBounds 形,`checkGeometry` 违例时报"declared launch bound"。示范:`hgemm_bf16`(max_threads=128),CI 断言 `.maxntid 128;` 且位于 `.entry` 之后。`--maxrregcount` CLI 保留为 ptxas 期实验旋钮。
+  - 未做:minnctapersm 无宿主侧校验(occupancy 是驱动实测,声明值只进 PTX);ptxas 对指令位置的接受性待真机。)
 - [ ] **arch 矩阵扩展真机验证**:当前仅 sm_90/H20;v1.0 前至少再覆盖一档(sm_80 或 sm_100,视可及硬件)。
 
 ## 明确不做 / 挂起

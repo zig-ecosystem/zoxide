@@ -116,6 +116,10 @@ fn computeTile(comptime buf: usize, acc: *[4][8][4]f32, wy: u32, wx: u32, lane: 
 }
 
 pub fn hgemmBf16(a: [*]const u16, b: [*]const u16, c: [*]f32, n: u32) callconv(.kernel) void {
+    // The declared contract, emitted as PTX directives. First statement, so
+    // the emitted order stays stable (LLVM places it after the ld.param
+    // prologue regardless; legal anywhere in the body).
+    cuda.launchBounds(api.hgemm_bf16.launch_bounds);
     const tid = cuda.threadIdx().x;
     const warp = tid / 32;
     const lane = cuda.laneId();

@@ -611,6 +611,39 @@ ignores calling convention.
 build time. Pre-assembling with ptxas and using `module` instead moves kernel
 errors to build time and skips the JIT, at the cost of pinning one architecture.
 
+### Launch bounds (the `__launch_bounds__` equivalent)
+
+A declaration can carry a launch contract, in the shared abi module right next
+to the signature:
+
+```zig
+pub const my_kernel = struct {
+    pub const signature = fn (x: [*]f32, n: u32) void;
+    pub const launch_bounds = .{ .max_threads = 128, .grid_multiple_of = 4 };
+};
+```
+
+The device side emits the contract as PTX performance directives — as the
+kernel's first statement, `cuda.launchBounds(api.my_kernel.launch_bounds);`
+writes `.maxntid 128;` (and `.minnctapersm` / `.maxnreg` when set) into the
+`.entry` body. Inline asm is the mechanism: Zig exposes no function attribute
+that reaches PTX, but asm text is emitted verbatim, and entry-body placement
+is legal for these directives (verified in the emitted PTX; the directive
+lands after the `ld.param` prologue, ahead of all computational
+instructions). The host
+side validates the same numbers at launch: `Module.kernel` accepts the struct
+form, and `checkGeometry` rejects a launch that contradicts the contract with
+a message naming it ("exceeds the kernel's declared launch bound (.maxntid
+128)"). One declaration, both sides, and drift between them is a compile
+error because the kernel passes the declaration's own value. `max_registers`
+is the comptime-pinned form of `zoxide bench --maxrregcount`; the CLI flag
+stays as the experiment knob (it applies at ptxas time without recompiling).
+
+Bounds are read structurally — the abi module declares plain fields and never
+imports `kernel_abi`, which keeps it shareable between the host and device
+module graphs. `grid_multiple_of` has no PTX form and is host-validated only.
+`hgemm_bf16` carries the working example (`max_threads = 128`).
+
 ## Pod verification script
 
 Easiest path — one bundle, three commands on the pod:

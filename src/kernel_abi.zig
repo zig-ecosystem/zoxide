@@ -35,6 +35,88 @@
 
 const std = @import("std");
 
+/// Launch bounds declared on a kernel signature — the comptime form of
+/// CUDA's `__launch_bounds__` / cuda-oxide's `#[launch_bounds]`.
+///
+/// Three of the fields lower to PTX performance directives in the `.entry`
+/// body (the device side emits them via `cuda.launchBounds`):
+///
+///   max_threads        -> `.maxntid T`
+///   min_blocks_per_sm  -> `.minnctapersm N`
+///   max_registers      -> `.maxnreg R` (a per-kernel, comptime-pinned form
+///                         of `zoxide bench --maxrregcount`, which stays as
+///                         the ptxas-time experiment knob)
+///
+/// `grid_multiple_of` has no PTX form; the host launch path validates it.
+///
+/// Declared once in the shared abi module: the device emits exactly these
+/// numbers and the host validates exactly these numbers, so the two cannot
+/// drift — same motivation as the signature itself.
+pub const LaunchBounds = struct {
+    max_threads: ?u32 = null,
+    min_blocks_per_sm: ?u32 = null,
+    max_registers: ?u32 = null,
+    grid_multiple_of: ?u32 = null,
+};
+
+/// A declaration that carries bounds: `WithBounds(fn (...) void, .{ ... })`
+/// is used anywhere a bare `fn (...) void` declaration was accepted.
+/// Equivalently, a shared abi module can declare the same shape by hand —
+///
+/// ```zig
+/// pub const my_kernel = struct {
+///     pub const signature = fn ([*]f32, u32) void;
+///     pub const launch_bounds = .{ .max_threads = 128 };
+/// };
+/// ```
+///
+/// Bounds are read structurally (field by field), so the abi module does not
+/// need to import this file — which keeps it importable from both the host
+/// and device modules without a module-graph clash.
+pub fn WithBounds(comptime sig: type, comptime bounds: LaunchBounds) type {
+    return struct {
+        pub const signature = sig;
+        pub const launch_bounds = bounds;
+    };
+}
+
+/// The function type behind a declaration, bare or WithBounds.
+pub fn signatureOf(comptime Decl: type) type {
+    comptime {
+        switch (@typeInfo(Decl)) {
+            .@"fn" => return Decl,
+            .@"struct" => {
+                if (!@hasDecl(Decl, "signature"))
+                    @compileError("expected a kernel signature (fn type) or WithBounds(fn, ...), got " ++ @typeName(Decl));
+                return Decl.signature;
+            },
+            else => @compileError("expected a kernel signature (fn type) or WithBounds(fn, ...), got " ++ @typeName(Decl)),
+        }
+    }
+}
+
+/// The bounds a declaration carries, if any. Read structurally: any struct
+/// whose `launch_bounds` decl has some subset of LaunchBounds' fields
+/// converts; unknown field names are a compile error rather than silently
+/// ignored (a typo'd bound would otherwise never fire).
+pub fn boundsOf(comptime Decl: type) ?LaunchBounds {
+    comptime {
+        if (@typeInfo(Decl) != .@"struct" or !@hasDecl(Decl, "launch_bounds")) return null;
+        const lb = Decl.launch_bounds;
+        const lb_info = @typeInfo(@TypeOf(lb)).@"struct";
+        var out = LaunchBounds{};
+        for (@typeInfo(LaunchBounds).@"struct".fields) |f| {
+            const has = @hasField(@TypeOf(lb), f.name);
+            if (has) @field(out, f.name) = @field(lb, f.name);
+        }
+        for (lb_info.fields) |f| {
+            if (!@hasField(LaunchBounds, f.name))
+                @compileError("unknown launch bound '" ++ f.name ++ "'; valid: max_threads, min_blocks_per_sm, max_registers, grid_multiple_of");
+        }
+        return out;
+    }
+}
+
 /// Parameter types of a function type, in order.
 ///
 /// Returns a comptime-only `[]const type`, so call sites have to be in comptime
@@ -60,10 +142,12 @@ pub fn paramTypes(comptime Fn: type) []const type {
 /// Assert two function types have the same parameter list and return type,
 /// ignoring calling convention.
 ///
-/// `Declared` is the shared declaration, `Actual` is `@TypeOf(the_kernel)`.
+/// `Declared` is the shared declaration (bare fn type or WithBounds),
+/// `Actual` is `@TypeOf(the_kernel)`.
 pub fn assertMatches(comptime Declared: type, comptime Actual: type) void {
     comptime {
-        const want = paramTypes(Declared);
+        const Decl = signatureOf(Declared);
+        const want = paramTypes(Decl);
         const got = paramTypes(Actual);
         if (want.len != got.len) {
             @compileError(std.fmt.comptimePrint(
@@ -79,7 +163,7 @@ pub fn assertMatches(comptime Declared: type, comptime Actual: type) void {
                 ));
             }
         }
-        const wr = @typeInfo(Declared).@"fn".return_type.?;
+        const wr = @typeInfo(Decl).@"fn".return_type.?;
         const gr = @typeInfo(Actual).@"fn".return_type.?;
         if (wr != gr) {
             @compileError("kernel signature mismatch in return type: declared " ++
@@ -101,4 +185,17 @@ test "paramTypes extracts in order" {
 test "assertMatches accepts an identical parameter list" {
     const Declared = fn ([*]const f32, [*]f32, f32, u32) void;
     assertMatches(Declared, Declared);
+}
+
+test "WithBounds carries the signature through assertMatches and boundsOf" {
+    const Bare = fn ([*]const f32, u32) void;
+    const Decl = WithBounds(Bare, .{ .max_threads = 128, .grid_multiple_of = 4 });
+    comptime {
+        assertMatches(Decl, Bare);
+        std.debug.assert(signatureOf(Decl) == Bare);
+        const b = boundsOf(Decl).?;
+        std.debug.assert(b.max_threads.? == 128);
+        std.debug.assert(b.grid_multiple_of.? == 4);
+        std.debug.assert(boundsOf(Bare) == null);
+    }
 }
