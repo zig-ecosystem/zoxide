@@ -39,6 +39,17 @@ const examples = [_]Example{
     .{ .stem = "tma_s2g_smoke", .entry = "tmaS2gSmoke", .default_block = 128 },
 };
 
+/// All known stems, joined for the unknown-example error — generated from the
+/// table so the message cannot drift from it again (it once listed 6 of 12).
+const example_stems = blk: {
+    var s: []const u8 = "";
+    for (examples) |e| {
+        if (s.len != 0) s = s ++ "/";
+        s = s ++ e.stem;
+    }
+    break :blk s;
+};
+
 fn findExample(path: []const u8) ?Example {
     const base = std.fs.path.basename(path);
     const stem = std.fs.path.stem(base);
@@ -58,7 +69,7 @@ pub fn run(
     out: *std.Io.Writer,
 ) !u8 {
     const ex = findExample(args.input) orelse {
-        try out.print("error: '{s}' does not look like a known example (vector_add/shared_reverse/warp_reduce/atomic_counter/debug_print/wgmma_smoke)\n", .{args.input});
+        try out.print("error: '{s}' does not look like a known example ({s})\n", .{ args.input, example_stems });
         return 1;
     };
 

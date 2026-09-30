@@ -89,8 +89,10 @@ prints the instruction count by mnemonic+modifiers, which automates the
 hand-grep analysis behind `docs/upstream-asm-output-limit.md` and the TMA
 address-arithmetic accounting in `src/tma.zig`. CI lints every kernel PTX.
 
-Supported arch values: `sm_75 sm_80 sm_86 sm_89 sm_90 sm_100 sm_120`
-(default `sm_90` everywhere).
+Supported arch values: `sm_75 sm_80 sm_86 sm_89 sm_90 sm_90a sm_100 sm_100a sm_120`
+(default `sm_90` everywhere). The `a` suffixes are the architecture-specific
+targets: `sm_90a` is required by the wgmma/TMA kernels, `sm_100a` by the
+warpops/ldmatrix/packed smokes.
 
 `zoxide ptx` shells out to
 `zig build-lib -target nvptx64-cuda -mcpu <arch> -fstrip -fno-ubsan-rt -fno-emit-bin -femit-asm=... -O ReleaseFast`.
@@ -149,8 +151,12 @@ kernel), and an unknown bare name errors with the list of embedded stems.
 ./zoxide run vector_add.ptx --kernel vector_add_$_vectorAdd   # override mangled name
 ```
 
-Known examples are matched by file basename (`vector_add`, `shared_reverse`,
-`warp_reduce`, `atomic_counter`); each has a hardcoded host harness that
+Known examples are matched by file basename; the full list is the `examples`
+table in src/run.zig (currently: vector_add, shared_reverse, warp_reduce,
+atomic_counter, debug_print, wgmma_smoke, dev_global, const_bank,
+const_vs_ldg, mbar_smoke, tma_smoke, tma_s2g_smoke). With the default
+`-Dembed-kernels` build, a bare name alone suffices — no path needed.
+Each example has a hardcoded host harness that
 fills inputs, launches, copies back and verifies against a CPU reference.
 Expected output on success, e.g.:
 

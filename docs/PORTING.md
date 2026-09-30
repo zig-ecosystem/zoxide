@@ -119,7 +119,7 @@ kernel.zig → PTX（NVPTX 后端）→ ptxas 编排 → doctor。**结论：路
 
 ## 四、决策点（下一步开工前需要确认）
 
-1. **arch 基线**：✅ 已定为 **sm_90**（验证环境为 H20 pod，Hopper 架构）。zoxide 默认 `-mcpu sm_90`，白名单 75/80/86/89/90/100/120 可通过 `--arch` 覆盖。
+1. **arch 基线**：✅ 已定为 **sm_90**（验证环境为 H20 pod，Hopper 架构）。zoxide 默认 `-mcpu sm_90`，白名单 75/80/86/89/90/90a/100/100a/120 可通过 `--arch` 覆盖（90a 供 wgmma/TMA，100a 供 warpops/ldmatrix/packed smoke）。
 2. **host 绑定方式**：手写最小 extern 集（零依赖）+ 按需扩充；pod 内 dlopen 顺序 `libcuda.so.1` → `libcuda.so`（runtime 镜像常缺 dev 符号链接）。
 3. **真机验证环境**：✅ k8s pod（H20）。zoxide 已提供 musl 静态交叉编译产物（`zig build -Dtarget=x86_64-linux-musl`），scp 进 pod 即可运行；PTX→cubin 用 pod 内 ptxas（需 ≥ CUDA 12.4）。
 
