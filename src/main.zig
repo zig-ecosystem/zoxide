@@ -4,6 +4,7 @@ const scaffold = @import("scaffold.zig");
 const bench_cmd = @import("bench.zig");
 const gen_cmd = @import("gen.zig");
 const ptx = @import("ptx.zig");
+const toolwrap = @import("toolwrap.zig");
 
 /// Baseline GPU: NVIDIA H20 (Hopper, compute capability 9.0).
 const default_sm = "sm_90";
@@ -57,6 +58,10 @@ pub fn main(init: std.process.Init) !u8 {
         var w = std.Io.File.stdout().writerStreaming(io, &buf);
         defer w.interface.flush() catch {};
         return cmdLint(gpa, io, args[2..], &w.interface);
+    } else if (std.mem.eql(u8, cmd, "sanitize")) {
+        return toolwrap.run(gpa, io, init.environ_map, args[2..], toolwrap.sanitize_tool);
+    } else if (std.mem.eql(u8, cmd, "debug")) {
+        return toolwrap.run(gpa, io, init.environ_map, args[2..], toolwrap.debug_tool);
     } else if (std.mem.eql(u8, cmd, "new")) {
         return cmdNew(gpa, io, init.environ_map, args[2..]);
     } else if (std.mem.eql(u8, cmd, "help") or std.mem.eql(u8, cmd, "--help") or std.mem.eql(u8, cmd, "-h")) {
@@ -81,6 +86,8 @@ fn usage() void {
         \\                                                       run an example kernel on the GPU and verify results
         \\  zoxide lint <file.ptx> [--census]                   lint PTX (structure + known-bad patterns);
         \\                                                       --census prints the instruction census instead
+        \\  zoxide sanitize [opts] [--] <command...>            run under compute-sanitizer
+        \\  zoxide debug [opts] [--] <command...>               run under cuda-gdb
         \\  supported arch values: {s}
         \\
     , .{ default_sm, default_sm, "sm_75 sm_80 sm_86 sm_89 sm_90 sm_90a sm_100 sm_120" });
@@ -731,27 +738,14 @@ fn fileExists(io: std.Io, path: []const u8) bool {
     return true;
 }
 
-/// Locate ptxas: PATH probe first, then $CUDA_HOME/bin, then /usr/local/cuda/bin.
-/// Returned slice is caller-owned.
+/// Locate ptxas via the shared tool probe (PATH, $CUDA_HOME/bin,
+/// /usr/local/cuda/bin). Returned slice is caller-owned.
 fn findPtxas(gpa: std.mem.Allocator, io: std.Io, env: *std.process.Environ.Map) ?[]u8 {
-    // A ptxas on PATH that fails `--version` is a broken toolchain, not an absent
-    // one; say so rather than falling through to the CUDA_HOME guesses in silence.
-    if (std.process.run(gpa, io, .{ .argv = &.{ "ptxas", "--version" } }) catch null) |res| {
-        gpa.free(res.stdout);
-        gpa.free(res.stderr);
-        if (termOk(res.term)) return gpa.dupe(u8, "ptxas") catch null;
-        std.debug.print("note: a ptxas on PATH failed `--version`; ignoring it and looking in CUDA_HOME\n", .{});
-    }
-    if (env.get("CUDA_HOME")) |home| {
-        const cand = std.fs.path.join(gpa, &.{ home, "bin", "ptxas" }) catch null;
-        if (cand) |c| {
-            if (fileExists(io, c)) return c;
-            gpa.free(c);
-        }
-    }
-    const fallback = "/usr/local/cuda/bin/ptxas";
-    if (fileExists(io, fallback)) return gpa.dupe(u8, fallback) catch null;
-    return null;
+    return toolwrap.probe(gpa, io, env, .{
+        .exe = "ptxas",
+        .sub = "cubin",
+        .purpose = "assemble PTX into cubin",
+    });
 }
 
 fn findLibNvvm() ?[]const u8 {

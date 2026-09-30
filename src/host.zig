@@ -624,3 +624,8 @@ test {
     // The PTX text-view module's tests live in src/ptx.zig.
     std.testing.refAllDecls(@import("ptx.zig"));
 }
+
+test {
+    // compute-sanitizer / cuda-gdb wrapper: probe order and argv assembly.
+    std.testing.refAllDecls(@import("toolwrap.zig"));
+}

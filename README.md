@@ -67,7 +67,17 @@ zig-out/bin/zoxide doctor [--arch sm_90]                       # probe toolchain
 zig-out/bin/zoxide ptx src/kernel.zig -o out.ptx [--arch sm_90]  # Zig source -> PTX
 zig-out/bin/zoxide cubin out.ptx -o out.cubin [--arch sm_90]     # PTX -> cubin (needs ptxas)
 zig-out/bin/zoxide lint out.ptx [--census]                        # PTX lint / instruction census
+zig-out/bin/zoxide sanitize --tool memcheck ./zoxide run x.ptx    # compute-sanitizer wrapper
+zig-out/bin/zoxide debug --args ./zoxide run x.ptx                # cuda-gdb wrapper
 ```
+
+`sanitize`/`debug` are thin exec wrappers (`src/toolwrap.zig`): they locate
+the tool the same way `cubin` finds ptxas (PATH, then `$CUDA_HOME/bin`, then
+`/usr/local/cuda/bin`), forward all arguments verbatim (a leading `--` is
+accepted for readability, not required), and replace the process, so the
+tool's exit status is the wrapper's and cuda-gdb stays interactive. Absent
+tools are a hard error naming what was probed, matching `cubin` on a missing
+ptxas.
 
 `zoxide lint` is a lossless PTX text view (`src/ptx.zig`) consumed as a
 checker: it verifies structure (balanced braces, instructions inside an

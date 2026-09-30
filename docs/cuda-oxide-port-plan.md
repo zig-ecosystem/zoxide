@@ -84,7 +84,7 @@
 
 - [x] **PTX parse/lint**(对标 ptx-parse):无损文本视图,先在内部消费——bench 报告直接解析 ptxas 输出而非正则,upstream-asm-output-limit 类分析自动化。(2026-09-30 第一刀落地:`src/ptx.zig` 语句级无损视图 + `zoxide lint` / `--census`,CI 全量 lint,8 个单测含 38 份 kernel PTX 往返。范围修正:bench 资源占用读的是 driver attr,本无正则可换,首个内部消费者改为 census;操作数保持 span,无完整文法。)
 - [ ] **差分验证**:对标 fuzzer 的最小形态——同一 kernel 的 Zig 产 PTX 与 nvcc 参考实现做数值对拍,接入 pod-verify;竞态扰动(ptx-schedule 对应物:插 nanosleep 暴露同步 bug)列为候选,视 mbarrier/cluster 使用密度决定。
-- [ ] **`zoxide sanitize` / `zoxide debug` 子命令**:封装 compute-sanitizer / cuda-gdb,doctor 分级模式照搬。
+- [x] **`zoxide sanitize` / `zoxide debug` 子命令**:封装 compute-sanitizer / cuda-gdb,doctor 分级模式照搬。(2026-09-30 落地,`src/toolwrap.zig` 两个子命令共享一条 probe+exec 路径:probe 顺序 PATH → $CUDA_HOME/bin → /usr/local/cuda/bin,与 ptxas 同源(findPtxas 已重构为调用共享 probe);参数逐字透传,`--` 可选;exec 用 `std.process.replace`,exit code 即工具的,cuda-gdb 保持交互。缺席行为照搬 cubin(报错点名探测位置,exit 1)而非 doctor 的 warn——子命令的全部职责就是这个工具。范围说明:未做"缺省命令推导"之类的糖。验证:probe 顺序与 argv 组装 4 个单测;exec 路径用假 binary 验证(找到、透传、exit 42 透传);真工具本机不存在,真实 exec 未验证。)
 - [ ] **artifact 嵌入 host 二进制**(对标 `#[cuda_module]` 的 oxide-artifacts):消除对外挂 .ptx 文件路径的依赖,是"下游包分发"形态的前提。
 - [ ] **async 运行时**(对标 cutile-rs cuda-async):惰性 DeviceOperation + `.sync()`。注意 cuda-oxide 本体已不含这部分(迁去 cutile-rs),对标边界以 crates.io 0.3.1 为准。
 - [ ] **`launch_bounds` 等价物**(对标 `#[launch_bounds]`/`#[launch_contract]`):把 bench 的 `--maxrregcount` 从 CLI 参数下沉为 kernel 签名上的 comptime 属性,与类型化 launch 校验合并。
