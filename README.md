@@ -188,6 +188,8 @@ SGEMM (C = A·B, square f32) harness with CUDA event timing:
 ./zoxide bench hgemm_wgmma2.ptx --n 4096 --iters 10 --arch sm_90a   # + 3-stage pipeline
 ./zoxide bench hgemm_wgmma3.ptx --n 4096 --iters 10 --arch sm_90a   # + A from registers (RS)
 ./zoxide bench hgemm_bf16.ptx --n 4096 --iters 10   # bf16 mma.sync m16n8k16 (hgemm_mma2 shape, u16 storage)
+./zoxide bench imma_s8.ptx --n 4096 --iters 10      # int8 mma.sync m16n8k32, s32 accumulators
+./zoxide bench imma_s4.ptx --n 4096 --iters 10      # int4 mma.sync m16n8k64, packed 2-per-byte
 ```
 
 - `sgemm_naive.zig`: one thread per C element, direct global loads (baseline).
@@ -244,6 +246,18 @@ reg 15319 (34.8%) of the ~44 TFLOPS FP32 peak; reg verified at n=4000
   cp.async pipeline; only the mma element type differs. First P2 "mma 形状扩展"
   variant. PTX-complete and CI-asserted; real-GPU measurement is parked
   (no GPU on the dev machine).
+- `imma_s8.zig`: int8 mma (`mma.sync.m16n8k32.s32.s8.s8.s32`), s32
+  accumulators, exact integer verification (no tolerance). A fragments reuse
+  the bf16 ldmatrix.x4 addressing; B gathers bytes from shared by hand
+  (ldmatrix cannot produce 4 k-contiguous bytes of one column — see the
+  kernel doc comment). PTX-complete; GPU run parked.
+- `imma_s4.zig`: int4 mma (`mma.sync.m16n8k64.s32.s4.s4.s32`). s4 has no byte
+  type, so A/B travel two values per u8 (low nibble = even k, packed by
+  `examples_abi.packS4`); the A ldmatrix.x4 path then works verbatim and the
+  B gather takes 8 scalar loads per register. Exact integer verification
+  over the full [-8, 7] range. Peak percentage is printed against an
+  *assumed* 2x-INT8 ceiling — no H20 INT4 figure exists in the repo's spec
+  sources. PTX-complete; GPU run parked.
 ![HGEMM progression on H20](docs/assets/hgemm-progression.svg)
 
 - `hgemm_wgmma.zig`: Hopper warpgroup MMA. 86.3 TFLOPS (54.3% of FP16 tensor

@@ -65,6 +65,10 @@
     - **B fragment 无法走 ldmatrix**,这是指令层面的固有不匹配而非疏漏:s8 的 B 寄存器要的是"同一列、k 方向 4 个连续字节",而 ldmatrix 每 lane 只发 4 个**内存连续**字节,`.trans` 换的是哪个轴连续,仍只给每个 8x8 矩阵 2 个 k 行。CUTLASS 靠 store 时把 B 置换成 crosswise 布局绕开,而 cp.async 的 16B chunk 只能搬全局连续字节,这条路在此不可用。因此 B 以 128 条 `ld.shared.b8` 手工打包——**先正确,置换优化列为后续**。代价在 PTX 里可见(无 `ldmatrix.*.trans`),预期吞吐显著低于 int8 峰值,CI 已把"无 trans"和"128 条 b8"一起断言,将来任一侧改动会强制同时复核。
     - 验证:`zig build kernels` 产出 64 条目标 mma、8 条 ldmatrix.x4、128 条 ld.shared.b8、2 条 bar.sync、无 `$N`/`%[` 残留、无 `__local_depot`(即无显式 spill),CI 断言已加。bench 变体 `runImmaS8` 走**精确整数相等**校验(s8×s8→s32 无舍入),输入取满 i8 范围以覆盖符号扩展与小端打包;峰值口径 H20 INT8 296 TOPS(与仓库既有 148/44 同一份规格表)。
     - **未验证项**:本机无 CUDA 工具链,`ptxas` 不可用,故寄存器分配/spill 与 occupancy 未经检查(`.reg %r<2351>` 是虚拟寄存器数,不代表实际压力);真机计时与 PASS 同 bf16 一并挂起至 GPU 环境。
+  - 进展(2026-09-30):**int4 形状完成(PTX 级)**——`imma_s4`,`mma.sync.aligned.m16n8k64.row.col.s32.s4.s4.s32`(选 k64 而非 k32,每 mma 的 K 更深)。s4 无字节类型,A/B 按"每字节两个值、低半字节 = 偶数 k"打包(`examples_abi.packS4` 一处定义,host/device 不会漂移);A 行 64 个 s4 = 32B,imma_s8 的 ldmatrix.x4 寻址原样复用,B 同样无法走 ldmatrix(每寄存器要 8 个 k 连续值 + 半字节提取),以 8 条 `ld.shared.b8`/寄存器手工打包(全 kernel 256 条),trans 守卫与 s8 同款。
+    - 验证:64 条目标 mma、8 条 ldmatrix.x4、256 条 ld.shared.b8、无 trans、无 `$N`/`%[`、无 `st.local` spill,CI 断言已加;bench 变体 `runImmaS4` 精确整数相等校验,输入取满 [-8,7](最坏 |sum| = n·8·8 = 262144 @ n=4096,深在 i32 内)。
+    - **峰值口径是假设**:仓库规格来源里没有 H20 INT4 数字(Hopper 官方不宣传 INT4),按惯例取 INT8 的 2 倍 = 592 TOPS,注释与输出里均标注为假设而非实测规格。
+    - fp8(e4m3/e5m2)未做:catalog 标 minimum_sm 89,sm_90a 是否接受有争议(CUTLASS 在 Hopper 上 FP8 走 wgmma),留待单独评估。
   - fp8 形状:`mma.sync m16n8k16` 的 fp8 变体 catalog 已有 8 条(e4m3/e5m2 × f16/f32 累加),但 **sm_90 上的可用性有架构疑问**,留后处理,不与 int8 合并推进。int4/f6/f4 未动。
 - [ ] **sparse mma**:catalog 有条目,等 P2 mma 基建成熟后按同一模式生成。
 - [ ] **tcgen05(Blackwell)**:仅当拿到 sm_100 真机才排期。`.reg` 绕法已验证可行,但 spill 代价数据(wgmma4 首跑会产出)决定这条路值不值得走。当前标注 blocked-on-hardware。

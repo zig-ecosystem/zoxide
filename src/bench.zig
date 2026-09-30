@@ -64,14 +64,15 @@ pub fn benchMain(
     const hgemm_tma = std.mem.eql(u8, stem, "hgemm_tma");
     const hgemm_bf16 = std.mem.eql(u8, stem, "hgemm_bf16");
     const imma_s8 = std.mem.eql(u8, stem, "imma_s8");
+    const imma_s4 = std.mem.eql(u8, stem, "imma_s4");
     const wgmma = hgemm3 or hgemm4 or hgemm5 or hgemm6 or hgemm_tma;
     const hgemm = hgemm1 or hgemm2 or wgmma;
     // Block tile (m, n). hgemm_wgmma uses one warpgroup over a 64x128 tile;
     // the mma.sync kernels use square tiles.
-    const hgemm_tile_m: usize = if (wgmma) 64 else if (hgemm2 or hgemm_bf16 or imma_s8) 128 else 64;
+    const hgemm_tile_m: usize = if (wgmma) 64 else if (hgemm2 or hgemm_bf16 or imma_s8 or imma_s4) 128 else 64;
     const hgemm_tile_n: usize = if (wgmma) 128 else hgemm_tile_m;
-    if (!tiled and !naive and !reg and !opt and !opt2 and !swz and !hgemm and !hgemm_bf16 and !imma_s8) {
-        try out.print("error: bench supports sgemm_*, hgemm_mma*, hgemm_wgmma*, hgemm_tma, hgemm_bf16 or imma_s8 inputs (got '{s}')\n", .{args.input});
+    if (!tiled and !naive and !reg and !opt and !opt2 and !swz and !hgemm and !hgemm_bf16 and !imma_s8 and !imma_s4) {
+        try out.print("error: bench supports sgemm_*, hgemm_mma*, hgemm_wgmma*, hgemm_tma, hgemm_bf16 or imma_s* inputs (got '{s}')\n", .{args.input});
         return 1;
     }
     const regblocked = reg or opt or opt2 or swz;
@@ -89,6 +90,13 @@ pub fn benchMain(
     // rather than producing a wrong number, so this is a hard gate.
     if (imma_s8 and args.n % 128 != 0) {
         try out.print("error: imma_s8 requires n % 128 == 0 (got {d})\n", .{args.n});
+        return 1;
+    }
+    // imma_s4: same 128x128 tiling and unguarded epilogue as imma_s8, and the
+    // 64-deep K slice plus two-s4-per-byte packing additionally need n even —
+    // n % 128 covers all of it.
+    if (imma_s4 and args.n % 128 != 0) {
+        try out.print("error: imma_s4 requires n % 128 == 0 (got {d})\n", .{args.n});
         return 1;
     }
     const n = args.n;
@@ -131,6 +139,8 @@ pub fn benchMain(
         try std.fmt.allocPrint(gpa, "{s}_$_hgemmBf16", .{stem})
     else if (imma_s8)
         try std.fmt.allocPrint(gpa, "{s}_$_immaS8", .{stem})
+    else if (imma_s4)
+        try std.fmt.allocPrint(gpa, "{s}_$_immaS4", .{stem})
     else if (hgemm6)
         try std.fmt.allocPrint(gpa, "{s}_$_hgemmWgmma4", .{stem})
     else if (hgemm5)
@@ -217,6 +227,15 @@ pub fn benchMain(
         reportOccupancy(kern.inner, 128, dev_info, out) catch |e|
             try out.print("kernel: resource/occupancy query failed ({s}): {s}\n", .{ @errorName(e), drv.lastError() });
         return runImmaS8(gpa, &ctx, kern, n, args.iters, out, hgemm_tile_m, hgemm_tile_n, dev_info);
+    }
+    if (imma_s4) {
+        const kern = mod.kernel(api.imma_s4, namez) catch |e| {
+            try out.print("error: {s}: {s}\n", .{ @errorName(e), drv.lastError() });
+            return 1;
+        };
+        reportOccupancy(kern.inner, 128, dev_info, out) catch |e|
+            try out.print("kernel: resource/occupancy query failed ({s}): {s}\n", .{ @errorName(e), drv.lastError() });
+        return runImmaS4(gpa, &ctx, kern, n, args.iters, out, hgemm_tile_m, hgemm_tile_n, dev_info);
     }
     if (hgemm) {
         const kern = mod.kernel(api.hgemm, namez) catch |e| {
@@ -636,6 +655,134 @@ fn runImmaS8(gpa: std.mem.Allocator, ctx: *gpu.Context, kern: gpu.Kernel(api.imm
         var k: usize = 0;
         while (k < n) : (k += 1) {
             want += @as(i64, ah[row * n + k]) * @as(i64, bh[k * n + col]);
+        }
+        if (want != c[idx]) {
+            if (bad == 0) first_bad = .{ .row = row, .col = col, .want = want, .got = c[idx] };
+            bad += 1;
+        }
+    }
+    if (bad > 0) {
+        try out.print("FAIL: {d}/256 samples wrong; first at ({d},{d}) want {d} got {d}\n", .{
+            bad, first_bad.row, first_bad.col, first_bad.want, first_bad.got,
+        });
+        return 1;
+    }
+    try out.print("PASS: 256/256 samples exact (integer MMA, no tolerance)\n", .{});
+    return 0;
+}
+
+/// H20 INT4 tensor peak. The repo's spec-table sources (the same sheet the
+/// FP32/FP16/INT8 numbers come from) list no INT4 figure for the H20 — INT4
+/// is not a marketed Hopper datapoint — so this is the conventional
+/// assumption of 2x the INT8 rate, stated here rather than presented as a
+/// measurement. Treat the percentage as "vs a plausible ceiling", not "vs
+/// spec".
+const h20_int4_peak_gops: f64 = 592000;
+
+/// Unpack one logical s4 from the packed host buffer (see
+/// examples_abi.packS4 for the nibble convention).
+fn s4At(bytes: []const u8, idx: usize) i64 {
+    const byte = bytes[idx / 2];
+    const nib: u8 = if (idx % 2 == 0) byte & 0xF else byte >> 4;
+    // Sign-extend the 4-bit two's-complement value via the top nibble.
+    const shifted: i8 = @bitCast(nib << 4);
+    return shifted >> 4;
+}
+
+/// IMMA s4 variant. Structurally runImmaS8: exact integer verification over
+/// the full s4 input range [-8, 7] — the nibble packing and sign extension
+/// in the B fragment gather are exactly what `-8`/`7` catch, and overflow is
+/// impossible (worst case |sum| = n * 8 * 8 = 262144 at n=4096, deep inside
+/// i32). Inputs are packed two per byte through the shared `api.packS4` so
+/// host and device cannot drift on the nibble order.
+fn runImmaS4(gpa: std.mem.Allocator, ctx: *gpu.Context, kern: gpu.Kernel(api.imma_s4), n: usize, iters: u32, out: *std.Io.Writer, tile_m: usize, tile_n: usize, dev_info: ?cu.Context.Info) !u8 {
+    const elems = n * n;
+    const packed_elems = elems / 2; // n % 128 == 0 is enforced above
+    const ah = try gpa.alloc(u8, packed_elems);
+    defer gpa.free(ah);
+    const bh = try gpa.alloc(u8, packed_elems);
+    defer gpa.free(bh);
+    var rng: u32 = 0x0fdb9753;
+    // Each draw's low nibble, sign-extended from bit 3 — covers the full s4
+    // range [-8, 7] uniformly.
+    for (ah) |*v| {
+        const lo: i8 = @as(i8, @bitCast(@as(u8, @truncate(xorshift(&rng) & 0xF)) << 4)) >> 4;
+        const hi: i8 = @as(i8, @bitCast(@as(u8, @truncate(xorshift(&rng) & 0xF)) << 4)) >> 4;
+        v.* = api.packS4(lo, hi);
+    }
+    for (bh) |*v| {
+        const lo: i8 = @as(i8, @bitCast(@as(u8, @truncate(xorshift(&rng) & 0xF)) << 4)) >> 4;
+        const hi: i8 = @as(i8, @bitCast(@as(u8, @truncate(xorshift(&rng) & 0xF)) << 4)) >> 4;
+        v.* = api.packS4(lo, hi);
+    }
+
+    const da = try ctx.allocSlice(u8, packed_elems);
+    defer ctx.freeSlice(da);
+    const db = try ctx.allocSlice(u8, packed_elems);
+    defer ctx.freeSlice(db);
+    const dc = try ctx.allocSlice(i32, elems);
+    defer ctx.freeSlice(dc);
+    try ctx.upload(da, ah);
+    try ctx.upload(db, bh);
+    // Poisoned rather than zeroed, same reasoning as the bf16 path.
+    try ctx.fillBytes(dc, 0xff);
+
+    const kargs = .{ da, db, dc, @as(u32, @intCast(n)) };
+    const grid_x: u32 = @intCast((n + tile_n - 1) / tile_n);
+    const grid_y: u32 = @intCast((n + tile_m - 1) / tile_m);
+
+    const start = try ctx.eventCreate();
+    defer start.destroy();
+    const stop = try ctx.eventCreate();
+    defer stop.destroy();
+    var best_ms: f32 = std.math.floatMax(f32);
+    var it: u32 = 0;
+    while (it < iters) : (it += 1) {
+        try start.record();
+        try kern.launch(.{ .x = grid_x, .y = grid_y }, .{ .x = 128 }, kargs);
+        try stop.record();
+        try stop.sync();
+        const ms = try start.elapsedMs(stop);
+        if (ms < best_ms) best_ms = ms;
+    }
+
+    // Two integer ops per MAC, same convention as imma_s8.
+    const ops = 2.0 * @as(f64, @floatFromInt(n)) * @as(f64, @floatFromInt(n)) * @as(f64, @floatFromInt(n));
+    const gops = ops / (@as(f64, best_ms) * 1e6);
+    try out.print("bench: imma_s4(tile={d}x{d}) n={d} iters={d}\n", .{ tile_m, tile_n, n, iters });
+    try out.print("best: {d:.3} ms over {d} iters\n", .{ best_ms, iters });
+    try out.print("GOPS: {d:.1} ({d:.1}% of assumed H20 INT4 tensor peak ~{d:.0} GOPS; see source comment)\n", .{ gops, gops / h20_int4_peak_gops * 100, h20_int4_peak_gops });
+
+    const blocks = ((n + tile_m - 1) / tile_m) * ((n + tile_n - 1) / tile_n);
+    // Half a byte per element, half the imma_s8 traffic for the same tiling.
+    const demand_bytes: f64 = @floatFromInt(blocks * (tile_m + tile_n) * n / 2);
+    const gbs = demand_bytes / (@as(f64, best_ms) * 1e-3) / 1e9;
+    try out.print("global reads: {d:.2} GB demand -> {d:.2} TB/s (L2 absorbs repeats; DRAM is lower)\n", .{ demand_bytes / 1e9, gbs / 1000 });
+    if (dev_info) |di| {
+        const operands_bytes: f64 = @floatFromInt(2 * n * n / 2);
+        const l2: f64 = @floatFromInt(di.l2_bytes);
+        try out.print("A+B working set: {d:.0} MB vs {d:.0} MB L2 — {s}\n", .{
+            operands_bytes / (1 << 20),
+            l2 / (1 << 20),
+            if (operands_bytes <= l2) "fits, so repeat reads stay on chip" else "exceeds L2, repeat reads reach DRAM",
+        });
+    }
+
+    const c = try gpa.alloc(i32, elems);
+    defer gpa.free(c);
+    try ctx.download(c, dc);
+    var bad: usize = 0;
+    var first_bad: struct { row: usize, col: usize, want: i64, got: i32 } = undefined;
+    var vrng: u32 = 0xdeadbeef;
+    var si: usize = 0;
+    while (si < 256) : (si += 1) {
+        const idx = xorshift(&vrng) % elems;
+        const row: usize = idx / n;
+        const col: usize = idx % n;
+        var want: i64 = 0;
+        var k: usize = 0;
+        while (k < n) : (k += 1) {
+            want += s4At(ah, row * n + k) * s4At(bh, k * n + col);
         }
         if (want != c[idx]) {
             if (bad == 0) first_bad = .{ .row = row, .col = col, .want = want, .got = c[idx] };

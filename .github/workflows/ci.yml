@@ -130,6 +130,20 @@ jobs:
           test "$(grep -c 'bar\.sync' imma_s8.ptx)" -eq 2
           # The s8 shape needs sm_80; the default kernel target is sm_90.
           grep -q '\.target sm_9' imma_s8.ptx
+          # imma_s4: int4 mma shape, two s4 per byte, s32 accumulators. Same
+          # tiling, pipeline and A path as imma_s8; the B gather needs 8
+          # k-contiguous values per register now, so the scalar-load count
+          # doubles. Same trans-guard reasoning as imma_s8.
+          test "$(grep -c 'mma\.sync\.aligned\.m16n8k64\.row\.col\.s32\.s4\.s4\.s32' imma_s4.ptx)" -eq 64
+          grep -q 'ldmatrix\.sync\.aligned\.m8n8\.x4' imma_s4.ptx
+          if grep -q 'ldmatrix\.[a-z0-9.]*trans' imma_s4.ptx; then echo "imma_s4: B now uses ldmatrix.trans; update the doc comment and the ld.shared.b8 count"; exit 1; fi
+          test "$(grep -c 'ld\.shared\.b8' imma_s4.ptx)" -eq 256
+          grep -q 'cp\.async\.cg\.shared\.global' imma_s4.ptx
+          grep -q 'cp\.async\.wait_group' imma_s4.ptx
+          if grep -qE '\$[0-9]|%\[' imma_s4.ptx; then echo "imma_s4: unsubstituted operand"; exit 1; fi
+          test "$(grep -c 'bar\.sync' imma_s4.ptx)" -eq 2
+          grep -q '\.target sm_9' imma_s4.ptx
+          if grep -q 'st\.local' imma_s4.ptx; then echo "imma_s4: spilled to local memory"; exit 1; fi
           # wgmma kernels: sm_90a target, RS vs SS operand forms, pipeline depth.
           for f in wgmma_smoke hgemm_wgmma hgemm_wgmma2 hgemm_wgmma3; do
             grep -q '\.target sm_90a' "$f.ptx" || { echo "$f: not built for sm_90a"; exit 1; }

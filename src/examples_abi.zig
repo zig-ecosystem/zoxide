@@ -32,6 +32,20 @@ pub const hgemm_bf16 = fn (a: [*]const u16, b: [*]const u16, c: [*]f32, n: u32) 
 /// equality, not a tolerance.
 pub const imma_s8 = fn (a: [*]const i8, b: [*]const i8, c: [*]i32, n: u32) void;
 
+/// `imma_s4`: the int4 tensor-core shape, `mma.sync.m16n8k64.s32.s4.s4.s32`.
+/// s4 has no byte type, so A and B are packed bytes (see `packS4`) and `n` is
+/// the *logical* element count per row — both sides must agree on that, which
+/// is why the convention lives here and not in a comment on each side.
+pub const imma_s4 = fn (a: [*]const u8, b: [*]const u8, c: [*]i32, n: u32) void;
+
+/// s4 storage convention for `imma_s4`: two 4-bit two's-complement values per
+/// byte, the even logical index in the low nibble. The kernel feeds packed
+/// bytes to the mma untouched, so this nibble order is the only coupling
+/// between the host packer and the hardware.
+pub fn packS4(even: i8, odd: i8) u8 {
+    return (@as(u8, @bitCast(even)) & 0xF) | ((@as(u8, @bitCast(odd)) & 0xF) << 4);
+}
+
 /// Shape of the `const_vs_ldg` comparison, shared because the harness computes
 /// the expected result from it.
 ///
