@@ -182,6 +182,12 @@ jobs:
           grep -q 'cp\.async\.bulk\.prefetch\.tensor\.2d\.L2\.global\.tile' tma_s2g_smoke.ptx
           grep -q 'cp\.async\.bulk\.prefetch\.tensor\.gather4\.2d\.L2\.global\.tile' tma_s2g_smoke.ptx
           grep -q 'cp\.async\.bulk\.prefetch\.tensor\.gather4\.2d\.L2\.global\.tile\.L2::cache_hint' tma_s2g_smoke.ptx
+          # g2s rank coverage: 2d is the real load; 1d/4d/5d are hand-written
+          # wrappers (no NVVM intrinsic) under a runtime-false guard — the CI
+          # assertion is their presence, which is all compile coverage means.
+          grep -q 'cp\.async\.bulk\.tensor\.1d\.shared::cluster\.global\.tile' tma_s2g_smoke.ptx
+          grep -q 'cp\.async\.bulk\.tensor\.4d\.shared::cluster\.global\.tile' tma_s2g_smoke.ptx
+          grep -q 'cp\.async\.bulk\.tensor\.5d\.shared::cluster\.global\.tile' tma_s2g_smoke.ptx
           if grep -qE '\$[0-9]|%\[' tma_s2g_smoke.ptx; then echo "tma_s2g_smoke: unsubstituted operand"; exit 1; fi
           # wgmma kernels: sm_90a target, RS vs SS operand forms, pipeline depth.
           for f in wgmma_smoke hgemm_wgmma hgemm_wgmma2 hgemm_wgmma3; do

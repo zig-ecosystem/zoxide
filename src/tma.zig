@@ -209,6 +209,53 @@ pub inline fn load3D(dst: anytype, desc: u64, bar: Barrier, x: i32, y: i32, z: i
         : .{ .memory = true });
 }
 
+/// 1D form. Same template as 2D/3D with one coordinate; hand-written because
+/// LLVM exposes no g2s intrinsic (see the module header).
+pub inline fn load1D(dst: anytype, desc: u64, bar: Barrier, x: i32) void {
+    asm volatile (
+        \\cp.async.bulk.tensor.1d.shared::cluster.global.tile.mbarrier::complete_tx::bytes
+        \\  [%[d]], [%[t], {%[x]}], [%[b]];
+        :
+        : [d] "r" (smemAddr(dst)),
+          [t] "l" (desc),
+          [x] "r" (x),
+          [b] "r" (bar.addr),
+        : .{ .memory = true });
+}
+
+/// 4D form, for a tensor with two outer (batch/K-block) dimensions.
+pub inline fn load4D(dst: anytype, desc: u64, bar: Barrier, x: i32, y: i32, z: i32, w: i32) void {
+    asm volatile (
+        \\cp.async.bulk.tensor.4d.shared::cluster.global.tile.mbarrier::complete_tx::bytes
+        \\  [%[d]], [%[t], {%[x], %[y], %[z], %[w]}], [%[b]];
+        :
+        : [d] "r" (smemAddr(dst)),
+          [t] "l" (desc),
+          [x] "r" (x),
+          [y] "r" (y),
+          [z] "r" (z),
+          [w] "r" (w),
+          [b] "r" (bar.addr),
+        : .{ .memory = true });
+}
+
+/// 5D form — the maximum rank `CUtensorMap` supports.
+pub inline fn load5D(dst: anytype, desc: u64, bar: Barrier, x: i32, y: i32, z: i32, w: i32, v: i32) void {
+    asm volatile (
+        \\cp.async.bulk.tensor.5d.shared::cluster.global.tile.mbarrier::complete_tx::bytes
+        \\  [%[d]], [%[t], {%[x], %[y], %[z], %[w], %[v]}], [%[b]];
+        :
+        : [d] "r" (smemAddr(dst)),
+          [t] "l" (desc),
+          [x] "r" (x),
+          [y] "r" (y),
+          [z] "r" (z),
+          [w] "r" (w),
+          [v] "r" (v),
+          [b] "r" (bar.addr),
+        : .{ .memory = true });
+}
+
 /// Hint the descriptor into cache. Worth issuing once early when the same
 /// descriptor drives many copies, since the first access otherwise stalls on a
 /// cold read of the 128-byte descriptor.

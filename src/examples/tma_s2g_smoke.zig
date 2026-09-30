@@ -84,6 +84,16 @@ pub fn tmaS2gSmoke(diag: [*]u32, desc_in: u64, desc_out: u64, x: i32, y: i32) ca
         tma.prefetchGather4_2DCacheHint(desc_in, y, y + 1, y + 2, y + 3, x, 0);
         bar.arriveExpectTx(geo.tile_bytes);
         tma.load2D(&tile_mem, desc_in, bar, x, y);
+        // Compile coverage for the hand-written 1d/4d/5d g2s forms: the guard
+        // is runtime-false (the host never passes minInt), so nothing here
+        // executes — but the instructions are emitted and CI greps them. The
+        // descriptor/barrier operands are the 2D ones; rank mismatches would
+        // only matter if this ran, and it cannot.
+        if (x == -2147483648) { // i32 minInt: runtime-false, host never passes it
+            tma.load1D(&tile_mem, desc_in, bar, x);
+            tma.load4D(&tile_mem, desc_in, bar, x, y, 0, 0);
+            tma.load5D(&tile_mem, desc_in, bar, x, y, 0, 0, 0);
+        }
         diag[Stage.g2s_issued] = 1;
     }
 
