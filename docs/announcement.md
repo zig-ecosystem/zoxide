@@ -4,6 +4,18 @@
 
 ---
 
+## v0.0.14-alpha — 真正的 constant memory，并证伪「广播缓存更快」（2026-09-24）
+
+PTX `.const` 存储体落地：模块作用域 inline asm 直接发声明（符号无 `_$_` mangling），host 侧 `cuModuleGetGlobal` 按名解析 + 两轮不同表复写。H20 实测 **4096/4096 精确**。
+
+顺手证伪了一个文档传说：「uniform 读 .const 走广播缓存所以更快」——实测 uniform 持平（1.02x），发散反而慢 3.3×（常量窗口按不同地址串行化）。结论：ConstBank 买的是 CUDA `__constant__` 语义与参数空间，不是吞吐；广播更快的说法从文档里删除，发散警告写进 README。
+
+## v0.0.13-alpha — 设备全局变量，host 写 / device 按名读（2026-09-24）
+
+`dev_global` 示例落地：host 经 `cuModuleGetGlobal` 写设备全局，kernel 用 `cuda.ldg()` 按名读。H20 实测 **1024/1024 精确**，两轮换表防常量折叠误判；带两次反向对照（其中一次否掉了我自己加的 PTX 后处理——控制组写错方向，修正后才算数）。
+
+---
+
 ## v0.0.12-alpha — 一个字节的溢出值 7.3% 吞吐（2026-09-21）
 
 ![hgemm progression](assets/hgemm-progression.svg)
@@ -48,6 +60,10 @@
 > A one-byte local variable in a Hopper GEMM inner loop cost 7.3% of throughput. Worse: I had credited that gain to a three-stage pipeline, which measures 0.0pp once the byte is gone. I had even noticed the second change and called it incidental while describing the comparison as a clean A/B. github.com/zig-ecosystem/zoxide
 
 ---
+
+## v0.0.11-alpha — `zoxide new` 脚手架 + host API 真机全通（2026-09-22）
+
+项目脚手架落地：`zoxide new` 生成与 `tests/downstream` 同构的 host+device 包（fingerprint 从编译器错误消息取回，不自己实现哈希）；CI 断言脚手架产物的 PTX 入口点 == host 查找的符号。同轮把 hgemm 签名从裸字节指针改为 f16 指针，host 侧类型化校验随之生效；host API 在 H20 上端到端全通。
 
 ## v0.0.10-alpha — host API for real pipelines（2026-09-21）
 
@@ -132,6 +148,13 @@ A 每段只读一次、之后从寄存器喂给全部 8 条 wgmma，读取量与
 
 顺带撤销一项：上一轮列的共享内存 swizzle 经分析对我们无效——tile 已是 core-matrix packed，一个 core matrix 是 128 字节连续，共享内存 32 banks × 4B = 128 字节一轮，单次读取已完整跨遍所有 bank，没有冲突可消。swizzle 模式针对的是保持宽行距的布局（TMA 产出那种）。
 
+> **订正（2026-09-21，v0.0.12 追记）**：「改动只有流水线深度……一次干净的 A/B」不成立。
+> 这一轮同时改了两件事：流水线深度，和 `cur: u1` → `kt % stages` 的缓冲切换写法。
+> 后者消掉了循环里一个 1 字节的 local store，价值 +4.0pp 的全部——三级流水本身值
+> **−0.0pp**（清掉开关后 2 级的 `hgemm_wgmma` 与 3 级完全相等到 58.3%）。
+> 我当时注意到了第二处改动并称其为「意外收获」，却在同一段宣称干净的 A/B。
+> 详见上方 v0.0.12 条目；教训：一次只改一个变量。
+
 发布文案（X 单帖）：
 
 > Zig on Hopper: 86.3 TFLOPS HGEMM, 58.3% of H20 FP16 tensor peak, exact — 1.60x over a tuned mma.sync kernel. The win this round was letting wgmma stay async: a third buffer so wait_group 1 retires the previous stage instead of draining the tensor core. github.com/zig-ecosystem/zoxide
@@ -163,6 +186,10 @@ wgmma 和 mma.sync 有两处本质不同。一是 **LLVM 没有 `wgmma.mma_async
 > Hopper warpgroup MMA in pure Zig: 80.3 TFLOPS, 54.3% of H20 FP16 tensor peak, exact results — 1.49x over the mma.sync baseline. No LLVM intrinsic exists for wgmma.mma_async, so it is hand-written inline asm + 64-bit smem descriptors. github.com/zig-ecosystem/zoxide
 
 ---
+
+## v0.0.6-alpha — FP16 tensor core：ldmatrix + cp.async 双缓冲（2026-09-21）
+
+`hgemm_mma2`：ldmatrix.x4/x2.trans 取 fragment、128x128 block tile、cp.async.cg 16B 双缓冲流水——**53.8 TFLOPS（FP16 峰值 36.4%），结果精确**，对 `hgemm_mma` 36.7 TF 再进一步。（注：v0.0.12 复测后该数为 54.5 TF / 36.8%，差异来自同轮的 `cur: u1` 清理。）
 
 ## v0.0.4-alpha — tensor-core instructions unlocked（2026-09-20）
 
@@ -215,6 +242,11 @@ SGEMM 优化线收官：naive 2.8 TF → tiled 4.4 TF → register-blocked 15.3 
 1. NVIDIA's CUDA Rust announcement nails the trend: the kernel should be written in your language, not shipped from somewhere else. We built the Zig answer — the Zig compiler's NVPTX backend emits PTX directly. No custom rustc backend, no pinned nightly, no LLVM plumbing. github.com/zig-ecosystem/zoxide
 2. Verified end-to-end on a real H20 pod: 4 kernels PASS, including a GPU-deadlock hunt (LLVM duplicated bar.sync across a branch — the same JumpThreading trap cuda-oxide disables in rustc). SGEMM: 6% → 10% → 35% → 43% of FP32 peak, every step diagnosed.
 3. Honest gaps vs cuda-oxide: no proc-macro safety layer yet; tcgen05/mma/TMA intrinsics blocked on Zig's asm-template limitations (689 catalog entries waiting on upstream). But 329 typed intrinsics already generated from cuda-oxide's own catalog (Apache-2.0 data reuse) 🙏
+
+> **订正（2026-09-20，v0.0.4 追记；2026-09-25 再订正）**：「689 条等上游」当天即被推翻——
+> Zig asm 支持 `%[name]` 具名操作数，689 条里 618 条直接生成（`src/gen/instrinsics_asm.zig`）。
+> 2026-09-25 普查按 catalog `id` 重新计数：总覆盖 **943/1025（92%）**；真正受 asm 宽度
+> 上限阻塞的只有 tcgen05 71 条，其余缺口的逐条结论见 `docs/cuda-oxide-port-plan.md` P2。
 
 ---
 
