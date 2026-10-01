@@ -67,6 +67,18 @@ pub fn packS4(even: i8, odd: i8) u8 {
 /// metadata register and the row-(g+8) word to the high 16.
 pub const hgemm_sp = fn (a: [*]const f16, b: [*]const f16, meta: [*]const u16, c: [*]f32, n: u32) void;
 
+/// `imma_sp_s8`: 2:4-structured-sparse int8 mma
+/// (`mma.sp::ordered_metadata.m16n8k32.s32.s8.s8.s32`). `a` is the pruned A
+/// (n/2 kept s8 per row), `meta` one u32 per row per 32 dense k
+/// (n/32 words per row), `b` dense s8, `c` s32, `n` the dense count per row.
+///
+/// Metadata contract: k-chunk j (dense k 4j..4j+3) owns nibble [4j+3 : 4j],
+/// low 2 bits = first kept index, high 2 = second — same nibble order as
+/// hgemm_sp. The row-to-thread assignment differs: k32's selector names a
+/// thread pair (t==0 carries row g, t==1 row g+8), so the metadata register
+/// holds one full row per contributing lane rather than two half-rows.
+pub const imma_sp_s8 = fn (a: [*]const i8, b: [*]const i8, meta: [*]const u32, c: [*]i32, n: u32) void;
+
 /// Shape of the `const_vs_ldg` comparison, shared because the harness computes
 /// the expected result from it.
 ///

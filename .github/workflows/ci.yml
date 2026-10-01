@@ -167,6 +167,20 @@ jobs:
           test "$(grep -c 'bar\.sync' hgemm_sp.ptx)" -eq 2
           grep -q '\.target sm_9' hgemm_sp.ptx
           if grep -q 'st\.local' hgemm_sp.ptx; then echo "hgemm_sp: spilled to local memory"; exit 1; fi
+          # imma_sp_s8: sparse int8 mma. A pruned (ldmatrix.x2, like
+          # hgemm_sp), B dense with the imma_s8 manual byte gather (128
+          # ld.shared.b8), metadata as 8 scalar u32 shared loads (4 m-tiles x
+          # 2 pipeline instances).
+          test "$(grep -c 'mma\.sp::ordered_metadata\.sync\.aligned\.m16n8k32\.row\.col\.s32\.s8\.s8\.s32' imma_sp_s8.ptx)" -eq 64
+          test "$(grep -c 'ldmatrix\.sync\.aligned\.m8n8\.x2\.shared\.b16' imma_sp_s8.ptx)" -eq 8
+          test "$(grep -c 'ld\.shared\.b8' imma_sp_s8.ptx)" -eq 128
+          test "$(grep -c 'ld\.shared\.b32' imma_sp_s8.ptx)" -eq 8
+          grep -q 'cp\.async\.cg\.shared\.global' imma_sp_s8.ptx
+          grep -q 'cp\.async\.wait_group' imma_sp_s8.ptx
+          if grep -qE '\$[0-9]|%\[' imma_sp_s8.ptx; then echo "imma_sp_s8: unsubstituted operand"; exit 1; fi
+          test "$(grep -c 'bar\.sync' imma_sp_s8.ptx)" -eq 2
+          grep -q '\.target sm_9' imma_sp_s8.ptx
+          if grep -q 'st\.local' imma_sp_s8.ptx; then echo "imma_sp_s8: spilled to local memory"; exit 1; fi
           # tma_s2g_smoke: the s2g round trip — generated store wrapper plus
           # bulk-group completion on one side, the hand-written g2s load on
           # the other. Both directions must appear; if the s2g line vanishes

@@ -185,6 +185,7 @@ pub fn build(b: *std.Build) void {
         .{ .name = "hgemm_bf16" },
         .{ .name = "imma_s8" },
         .{ .name = "imma_s4" },
+        .{ .name = "imma_sp_s8" },
         .{ .name = "hgemm_sp" },
         .{ .name = "wgmma_smoke", .sm = sm_90a_model },
         .{ .name = "hgemm_wgmma", .sm = sm_90a_model },

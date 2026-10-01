@@ -76,6 +76,7 @@
     - 关键事实(A fragment 与 metadata 读取,按 PTX ISA 解读,已写入 kernel 注释,真机首跑由精确比对证伪):A 以"已剪枝"形式存储(每 4 个 k 保 2,行宽减半 = 8 f16/16B),A fragment 每 lane 2 个 .b32(行 g 的 k-group t 两个保留值 + 行 g+8 同位),plain `ldmatrix.x2` 可直接加载(无需 dense 的 x4);B 保持 dense,沿用 `.x2.trans` 路径;metadata 每 mma 一个 32 位寄存器,由 selector 立即数选中的 lane 提供(取 0),低 16 位 = 行 g、高 16 位 = 行 g+8,行内 k-group j 占半字节 [4j+3:4j](低 2 位 = 第一个保留下标,高 2 位 = 第二个)。
     - 正确性口径:host 自行剪枝 A(伪随机 6 选 2 组合),参考为**剪枝后矩阵**的 dense CPU matmul,输入小整数精确 → 实际等价于零容差;metadata 位序/lane 读错会在首跑硬 FAIL。峰值按"sparse = 2× dense = 296 TFLOPS"假设标注(同 imma_s4 的处理)。
     - 验证:64 条 mma.sp、8 条 plain ldmatrix.x2、16 条 x2.trans、16 条 metadata 的 ld.shared.b16、2 条 bar.sync、无残留、无 st.local;CI 断言已加。int8/int4 sparse 形状未做,同模式可续。
+  - 进展(2026-10-01):**int8 sparse 完成(PTX 级)**——`imma_sp_s8`,`mma.sp::ordered_metadata.sync.aligned.m16n8k32.row.col.s32.s8.s8.s32`(wrapper 在 catalog 里存在)。片段读取按 PTX ISA 9.7.16.6.2.5:A 每 lane 2 个 .b32,覆盖 8 宽 chunk k=8t..8t+7(a0=行 g,a1=行 g+8),剪枝行 16B → ldmatrix.x2 原样可用;B 沿用 imma_s8 的手工收集;**metadata 每行一整个 u32**(k32 = 8 chunk × 4bit),且 k32 的 selector 选**线程对**(T0/T1),读作 T0=行 g、T1=行 g+8——此配对为最低置信解读,已写入 kernel 头与 next-pod-run 嫌疑清单第 2 位。校验:host 剪枝 + 全 s8 范围输入 + 剪枝后精确整数参考,零容差。峰值按 sparse INT8 = 2×296 = 592 TOPS 假设标注。PTX:64 条 mma.sp、8 条 ldmatrix.x2、128 条 ld.shared.b8、8 条 metadata ld.shared.b32、2 条 bar.sync、无残留、无 spill;CI 断言已加。int4 sparse 仍未做(4:8 聚簇稀疏,元数据语义不同)。
 - [ ] **tcgen05(Blackwell)**:仅当拿到 sm_100 真机才排期。`.reg` 绕法已验证可行,但 spill 代价数据(wgmma4 首跑会产出)决定这条路值不值得走。当前标注 blocked-on-hardware。
 
 ## P3 — 工程化(v1.0 稳定化前置)

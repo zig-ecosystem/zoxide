@@ -230,6 +230,7 @@ SGEMM (C = A·B, square f32) harness with CUDA event timing:
 ./zoxide bench imma_s8.ptx --n 4096 --iters 10      # int8 mma.sync m16n8k32, s32 accumulators
 ./zoxide bench imma_s4.ptx --n 4096 --iters 10      # int4 mma.sync m16n8k64, packed 2-per-byte
 ./zoxide bench hgemm_sp.ptx --n 4096 --iters 10     # 2:4 sparse fp16 mma.sp m16n8k16 + metadata
+./zoxide bench imma_sp_s8.ptx --n 4096 --iters 10   # 2:4 sparse int8 mma.sp m16n8k32 + metadata
 ```
 
 - `sgemm_naive.zig`: one thread per C element, direct global loads (baseline).
@@ -309,6 +310,15 @@ reg 15319 (34.8%) of the ~44 TFLOPS FP32 peak; reg verified at n=4000
   exact-integer inputs, so a wrong metadata bit order is a hard FAIL on
   first GPU run. Peak percentage is printed against an assumed 2x-dense
   sparse ceiling. PTX-complete; GPU run parked.
+- `imma_sp_s8.zig`: the same sparsity contract on the int8 shape
+  (`mma.sp::ordered_metadata.m16n8k32.s32.s8.s8.s32`). A pruned to 16 B/row
+  (ldmatrix.x2 works — 4 consecutive bytes per lane is exactly the s8 sparse
+  fragment), B dense via imma_s8's manual byte gather, metadata one full u32
+  per *row* (k32's selector names a thread pair, unlike hgemm_sp's single
+  thread — the row→lane assignment is documented in the kernel header as the
+  least-certain reading). Exact integer verification over the full s8 range
+  against the pruned reference; peak printed against an assumed 2x-dense
+  sparse-INT8 ceiling (592 TOPS). PTX-complete; GPU run parked.
 ![HGEMM progression on H20](docs/assets/hgemm-progression.svg)
 
 - `hgemm_wgmma.zig`: Hopper warpgroup MMA. 86.3 TFLOPS (58.3% of FP16 tensor
