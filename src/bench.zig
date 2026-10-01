@@ -67,16 +67,17 @@ pub fn benchMain(
     const imma_s4 = std.mem.eql(u8, stem, "imma_s4");
     const hgemm_sp = std.mem.eql(u8, stem, "hgemm_sp");
     const hgemm_wgmma_bf16 = std.mem.eql(u8, stem, "hgemm_wgmma_bf16");
+    const hgemm_wgmma_sp = std.mem.eql(u8, stem, "hgemm_wgmma_sp");
     const imma_sp_s8 = std.mem.eql(u8, stem, "imma_sp_s8");
     const imma_sp_s4 = std.mem.eql(u8, stem, "imma_sp_s4");
-    const wgmma = hgemm3 or hgemm4 or hgemm5 or hgemm6 or hgemm_tma or hgemm_wgmma_bf16;
+    const wgmma = hgemm3 or hgemm4 or hgemm5 or hgemm6 or hgemm_tma or hgemm_wgmma_bf16 or hgemm_wgmma_sp;
     const hgemm = hgemm1 or hgemm2 or wgmma;
     // Block tile (m, n). hgemm_wgmma uses one warpgroup over a 64x128 tile;
     // the mma.sync kernels use square tiles.
     const hgemm_tile_m: usize = if (wgmma) 64 else if (hgemm2 or hgemm_bf16 or imma_s8 or imma_s4 or hgemm_sp or imma_sp_s8 or imma_sp_s4) 128 else 64;
     const hgemm_tile_n: usize = if (wgmma) 128 else hgemm_tile_m;
-    if (!tiled and !naive and !reg and !opt and !opt2 and !swz and !hgemm and !hgemm_bf16 and !imma_s8 and !imma_s4 and !hgemm_sp and !imma_sp_s8 and !imma_sp_s4 and !hgemm_wgmma_bf16) {
-        try out.print("error: bench supports sgemm_*, hgemm_mma*, hgemm_wgmma*, hgemm_tma, hgemm_bf16, imma_s*, *_sp_* or hgemm_wgmma_bf16 inputs (got '{s}')\n", .{args.input});
+    if (!tiled and !naive and !reg and !opt and !opt2 and !swz and !hgemm and !hgemm_bf16 and !imma_s8 and !imma_s4 and !hgemm_sp and !imma_sp_s8 and !imma_sp_s4 and !hgemm_wgmma_bf16 and !hgemm_wgmma_sp) {
+        try out.print("error: bench supports sgemm_*, hgemm_mma*, hgemm_wgmma*, hgemm_tma, hgemm_bf16, imma_s*, *_sp_* or hgemm_wgmma_* inputs (got '{s}')\n", .{args.input});
         return 1;
     }
     const regblocked = reg or opt or opt2 or swz;
@@ -167,6 +168,8 @@ pub fn benchMain(
         try std.fmt.allocPrint(gpa, "{s}_$_hgemmSp", .{stem})
     else if (hgemm_wgmma_bf16)
         try std.fmt.allocPrint(gpa, "{s}_$_hgemmWgmmaBf16", .{stem})
+    else if (hgemm_wgmma_sp)
+        try std.fmt.allocPrint(gpa, "{s}_$_hgemmWgmmaSp", .{stem})
     else if (imma_sp_s8)
         try std.fmt.allocPrint(gpa, "{s}_$_immaSpS8", .{stem})
     else if (imma_sp_s4)
@@ -239,6 +242,15 @@ pub fn benchMain(
         reportOccupancy(kern.inner, api.hgemm_tma.threads, dev_info, out) catch |e|
             try out.print("kernel: resource/occupancy query failed ({s}): {s}\n", .{ @errorName(e), drv.lastError() });
         return runHgemmTma(gpa, &ctx, kern, n, args.iters, out, dev_info);
+    }
+    if (hgemm_wgmma_sp) {
+        const kern = mod.kernel(api.hgemm_wgmma_sp, namez) catch |e| {
+            try out.print("error: {s}: {s}\n", .{ @errorName(e), drv.lastError() });
+            return 1;
+        };
+        reportOccupancy(kern.inner, 128, dev_info, out) catch |e|
+            try out.print("kernel: resource/occupancy query failed ({s}): {s}\n", .{ @errorName(e), drv.lastError() });
+        return runHgemmWgmmaSp(gpa, &ctx, kern, n, args.iters, out, hgemm_tile_m, hgemm_tile_n, dev_info);
     }
     if (hgemm_bf16 or hgemm_wgmma_bf16) {
         const kern = mod.kernel(api.hgemm_bf16, namez) catch |e| {
@@ -1295,6 +1307,125 @@ fn runImmaSpS4(gpa: std.mem.Allocator, ctx: *gpu.Context, kern: gpu.Kernel(api.i
     }
     try out.print("PASS: 256/256 samples exact (sparse integer MMA, no tolerance)\n", .{});
     return 0;
+}
+
+/// Sparse wgmma harness: runHgemmSp's host-side pruning with the wgmma
+/// shape's metadata granularity (u32 per row per 32 dense k) and tile
+/// (64x128). The dense CPU reference runs over the *pruned* A with exact
+/// small-integer f16 inputs, so a wrong Figure-175 thread/row/half mapping
+/// is a hard FAIL on first GPU run, not a plausible number.
+fn runHgemmWgmmaSp(gpa: std.mem.Allocator, ctx: *gpu.Context, kern: gpu.Kernel(api.hgemm_wgmma_sp), n: usize, iters: u32, out: *std.Io.Writer, tile_m: usize, tile_n: usize, dev_info: ?cu.Context.Info) !u8 {
+    const elems = n * n;
+    const a_ref = try gpa.alloc(f32, elems); // pruned dense A, for the CPU reference
+    defer gpa.free(a_ref);
+    const b = try gpa.alloc(f32, elems);
+    defer gpa.free(b);
+    const ap = try gpa.alloc(f16, elems / 2); // pruned packed A, n/2 per row
+    defer gpa.free(ap);
+    const mh = try gpa.alloc(u32, elems / 32); // one word per row per 32 k
+    defer gpa.free(mh);
+    const bh = try gpa.alloc(f16, elems);
+    defer gpa.free(bh);
+
+    // The six ways to keep 2 of 4, first index < second.
+    const combos = [6][2]u2{ .{ 0, 1 }, .{ 0, 2 }, .{ 0, 3 }, .{ 1, 2 }, .{ 1, 3 }, .{ 2, 3 } };
+    var rng: u32 = 0x5eed1234;
+    for (0..n) |row| {
+        var kb: usize = 0; // 32-wide k blocks, one metadata word each
+        while (kb < n / 32) : (kb += 1) {
+            var word: u32 = 0;
+            inline for (0..8) |j| {
+                const group_base = row * n + kb * 32 + 4 * j;
+                const combo = combos[xorshift(&rng) % 6];
+                inline for (0..2) |e| {
+                    const kept = combo[e];
+                    const x: i32 = @intCast(xorshift(&rng) % 5);
+                    const val: f32 = @floatFromInt(x - 2); // -2..2, exact in f16
+                    a_ref[group_base + kept] = val;
+                    ap[(row * (n / 2)) + kb * 16 + 2 * j + e] = @floatCast(val);
+                }
+                var dropped: [2]u2 = undefined;
+                var di: usize = 0;
+                inline for (0..4) |cand| {
+                    if (cand != combo[0] and cand != combo[1]) {
+                        dropped[di] = cand;
+                        di += 1;
+                    }
+                }
+                a_ref[group_base + dropped[0]] = 0;
+                a_ref[group_base + dropped[1]] = 0;
+                // Nibble j: low 2 bits = first kept index, high 2 = second.
+                word |= (@as(u32, combo[0]) | (@as(u32, combo[1]) << 2)) << (4 * j);
+            }
+            mh[row * (n / 32) + kb] = word;
+        }
+    }
+    for (bh, 0..) |*v, i| {
+        const x: i32 = @intCast(xorshift(&rng) % 5);
+        const val: f32 = @floatFromInt(x - 2);
+        v.* = @floatCast(val);
+        b[i] = val;
+    }
+
+    const da = try ctx.allocSlice(f16, elems / 2);
+    defer ctx.freeSlice(da);
+    const db = try ctx.allocSlice(f16, elems);
+    defer ctx.freeSlice(db);
+    const dm = try ctx.allocSlice(u32, elems / 32);
+    defer ctx.freeSlice(dm);
+    const dc = try ctx.allocSlice(f32, elems);
+    defer ctx.freeSlice(dc);
+    try ctx.upload(da, ap);
+    try ctx.upload(db, bh);
+    try ctx.upload(dm, mh);
+    // Poisoned rather than zeroed, same reasoning as the other paths.
+    try ctx.fillBytes(dc, 0xff);
+
+    const kargs = .{ da, db, dm, dc, @as(u32, @intCast(n)) };
+    // grid.x walks N, grid.y walks M.
+    const grid_x: u32 = @intCast((n + tile_n - 1) / tile_n);
+    const grid_y: u32 = @intCast((n + tile_m - 1) / tile_m);
+
+    const start = try ctx.eventCreate();
+    defer start.destroy();
+    const stop = try ctx.eventCreate();
+    defer stop.destroy();
+    var best_ms: f32 = std.math.floatMax(f32);
+    var it: u32 = 0;
+    while (it < iters) : (it += 1) {
+        try start.record();
+        try kern.launch(.{ .x = grid_x, .y = grid_y }, .{ .x = 128 }, kargs);
+        try stop.record();
+        try stop.sync();
+        const ms = try start.elapsedMs(stop);
+        if (ms < best_ms) best_ms = ms;
+    }
+
+    const flops = 2.0 * @as(f64, @floatFromInt(n)) * @as(f64, @floatFromInt(n)) * @as(f64, @floatFromInt(n));
+    const gflops = flops / (@as(f64, best_ms) * 1e6);
+    try out.print("bench: hgemm_wgmma_sp(tile={d}x{d}) n={d} iters={d}\n", .{ tile_m, tile_n, n, iters });
+    try out.print("best: {d:.3} ms over {d} iters\n", .{ best_ms, iters });
+    try out.print("GFLOPS: {d:.1} ({d:.1}% of assumed H20 sparse FP16 peak ~{d:.0} GFLOPS; 2x dense, see hgemm_sp)\n", .{ gflops, gflops / h20_fp16_sparse_peak_gflops * 100, h20_fp16_sparse_peak_gflops });
+
+    const blocks = ((n + tile_m - 1) / tile_m) * ((n + tile_n - 1) / tile_n);
+    // A moves half its dense bytes (2:4 kept), B dense, metadata negligible.
+    const demand_bytes: f64 = @floatFromInt(blocks * (tile_m + 2 * tile_n) * n);
+    const gbs = demand_bytes / (@as(f64, best_ms) * 1e-3) / 1e9;
+    try out.print("global reads: {d:.2} GB demand -> {d:.2} TB/s (L2 absorbs repeats; DRAM is lower)\n", .{ demand_bytes / 1e9, gbs / 1000 });
+    if (dev_info) |di| {
+        const operands_bytes: f64 = @floatFromInt(3 * n * n); // A pruned + B dense, in bytes
+        const l2: f64 = @floatFromInt(di.l2_bytes);
+        try out.print("A+B working set: {d:.0} MB vs {d:.0} MB L2 — {s}\n", .{
+            operands_bytes / (1 << 20),
+            l2 / (1 << 20),
+            if (operands_bytes <= l2) "fits, so repeat reads stay on chip" else "exceeds L2, repeat reads reach DRAM",
+        });
+    }
+
+    const c = try gpa.alloc(f32, elems);
+    defer gpa.free(c);
+    @memset(c, 0);
+    return finishVerify(gpa, ctx, dc, a_ref, b, c, n, out);
 }
 
 /// TMA variant of runHgemm (S2): same data, timing loop and verification as

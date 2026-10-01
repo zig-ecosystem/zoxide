@@ -325,7 +325,70 @@ pub inline fn mmaAsyncM64N16K16RsBf16(
     acc.* = .{ .d0 = d0, .d1 = d1, .d2 = d2, .d3 = d3, .d4 = d4, .d5 = d5, .d6 = d6, .d7 = d7 };
 }
 
+/// `wgmma.mma_async.sp.sync.aligned.m64n16k32.f32.f16.f16` — 2:4 sparse f16,
+/// both operands in shared memory (sparse A has no RS form here — A comes
+/// through a descriptor; the RS syntax exists for sparse but the fragment
+/// layout differs, so this helper covers SS only).
+///
+/// Sparse f16 wgmma is m64n**k32** (the k16 sparse shape is tf32-only), with
+/// N/2 = 8 accumulators exactly like the dense n16 forms, so the 15-output
+/// cap arithmetic is unchanged. Operand order per PTX ISA 9.7.15.6.3
+/// (wgmma.mma_async.sp): d, a-desc, b-desc, sp-meta, sp-sel, scale-d,
+/// imm-scale-a, imm-scale-b, imm-trans-a, imm-trans-b. sp-sel is an immediate
+/// naming the contributing thread pair; we pass 0 (lanes t==0/t==1).
+///
+/// Metadata mapping per PTX ISA Release 8.7 Figure 175 (read from the PDF —
+/// the HTML text extraction drops the figure). Per warp (which covers rows
+/// w*16..w*16+15), lane 4g+t:
+///   t==0: bits[15:0] = row g's chunks 0-3, bits[31:16] = row g+8's chunks 0-3
+///   t==1: same rows, chunks 4-7
+///   t==2,3: ignored with sp-sel 0
+/// where "chunks" are 4-wide k groups and each 4-bit nibble holds two 2-bit
+/// indices (low = first kept, high = second kept), the same nibble convention
+/// as mma.sp. The packed A tile (64 rows x 16 kept f16) has exactly the byte
+/// shape of the dense m64n16k16 A tile, so the descriptor fields (lbo 128,
+/// sbo 256, Major.k) carry over unchanged.
+pub inline fn mmaSpAsyncM64N16K32(
+    acc: *Acc64x16,
+    desc_a: u64,
+    desc_b: u64,
+    meta: u32,
+    scale_d: bool,
+    comptime major_a: Major,
+    comptime major_b: Major,
+) void {
+    var d0 = acc.d0;
+    var d1 = acc.d1;
+    var d2 = acc.d2;
+    var d3 = acc.d3;
+    var d4 = acc.d4;
+    var d5 = acc.d5;
+    var d6 = acc.d6;
+    var d7 = acc.d7;
+    asm volatile (
+        \\{
+        \\.reg .pred p;
+        \\setp.ne.b32 p, %[sd], 0;
+        \\wgmma.mma_async.sp.sync.aligned.m64n16k32.f32.f16.f16 {%[d0],%[d1],%[d2],%[d3],%[d4],%[d5],%[d6],%[d7]}, %[da], %[db], %[meta], 0, p, 1, 1,
+    ++ " " ++ decimal(@intFromEnum(major_a)) ++ ", " ++ decimal(@intFromEnum(major_b)) ++ ";\n}"
+        : [d0] "+f" (d0),
+          [d1] "+f" (d1),
+          [d2] "+f" (d2),
+          [d3] "+f" (d3),
+          [d4] "+f" (d4),
+          [d5] "+f" (d5),
+          [d6] "+f" (d6),
+          [d7] "+f" (d7),
+        : [da] "l" (desc_a),
+          [db] "l" (desc_b),
+          [meta] "r" (meta),
+          [sd] "r" (@as(u32, @intFromBool(scale_d))),
+        : .{ .memory = true });
+    acc.* = .{ .d0 = d0, .d1 = d1, .d2 = d2, .d3 = d3, .d4 = d4, .d5 = d5, .d6 = d6, .d7 = d7 };
+}
+
 /// Comptime decimal rendering, for splicing immediates into asm templates.
+
 fn decimal(comptime n: u32) []const u8 {
     comptime {
         if (n == 0) return "0";

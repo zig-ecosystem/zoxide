@@ -95,6 +95,18 @@ pub const imma_sp_s8 = fn (a: [*]const i8, b: [*]const i8, meta: [*]const u32, c
 /// carries row g, t==1 row g+8.
 pub const imma_sp_s4 = fn (a: [*]const u8, b: [*]const u8, meta: [*]const u32, c: [*]i32, n: u32) void;
 
+/// `hgemm_wgmma_sp`: 2:4-structured-sparse f16 on the warpgroup path
+/// (`wgmma.mma_async.sp.m64n16k32.f32.f16.f16`). `a` is the pruned A (n/2 kept
+/// f16 per row), `meta` one u32 per row per 32 dense k (n/32 words per row),
+/// `b` dense f16, `n` the dense count per row.
+///
+/// Metadata contract: k-chunk j (dense k 4j..4j+3) owns nibble [4j+3 : 4j],
+/// low 2 bits = first kept index, high 2 = second — the mma.sp convention.
+/// The device-side thread mapping (which lane's register carries which rows'
+/// halves) is the warpgroup-wide one documented on `wg.mmaSpAsyncM64N16K32`,
+/// not the mma.sp one.
+pub const hgemm_wgmma_sp = fn (a: [*]const f16, b: [*]const f16, meta: [*]const u32, c: [*]f32, n: u32) void;
+
 /// Shape of the `const_vs_ldg` comparison, shared because the harness computes
 /// the expected result from it.
 ///

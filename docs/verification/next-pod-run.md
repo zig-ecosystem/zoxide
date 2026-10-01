@@ -44,21 +44,26 @@ tma_s2g_smoke(2f/2g 节)** + sgemm_swz + hgemm_wgmma×3 + intrinsics_smoke ptxas
   的 ptxas regs 数 vs wgmma3 的 102——下降则支持「TMA 为更宽 wgmma 腾寄存器」
   的使能条件论;结果精确性必须过。
 
-## 4. 新 mma 形状家族(hgemm_bf16 / imma_s8 / imma_s4 / hgemm_sp / imma_sp_s8 / imma_sp_s4 / hgemm_wgmma_bf16)
+## 4. 新 mma 形状家族(hgemm_bf16 / imma_s8 / imma_s4 / hgemm_sp / imma_sp_s8 / imma_sp_s4 / hgemm_wgmma_bf16 / hgemm_wgmma_sp)
 
 - `zoxide bench <stem> --n 4096 --iters 5`(都是 sm_90 默认可跑,无需 --arch)。
 - 全部精确校验(bf16/f16 小整数技巧,int 系零容差),任何布局/元数据解读
   错误都是硬 FAIL,不会给出貌似合理的数字——**FAIL 即信息**,对照各 kernel
   头部注释里标注的「PTX ISA 解读」段落逐条复核。
 - 已知最可能错的点(按嫌疑排序):
-  1. hgemm_sp 元数据位序/行配对/贡献线程(纯文档解读,无硬件佐证)
-  2. imma_sp_s8 / imma_sp_s4 元数据的行→线程配对(k32-s8 与 k64-s4 的 selector
+  1. **hgemm_wgmma_sp 元数据的线程映射**(新增,嫌疑升至首位):映射读自 PTX ISA
+     的 Figure 175 **图片**(文本抽取丢失,我渲染 PDF 页面读图),lane 4g+t
+     供行 w*16+g 与 g+8、t0 低半/t1 高半 chunk——读图错误无文本可校验;
+     另有二层:稀疏 A descriptor 的 stride 语义按"与 dense k16 tile 同字节形"
+     推的,若错则全 tile 错。精确校验,硬 FAIL。
+  2. hgemm_sp 元数据位序/行配对/贡献线程(纯文档解读,无硬件佐证)
+  3. imma_sp_s8 / imma_sp_s4 元数据的行→线程配对(k32-s8 与 k64-s4 的 selector
      都选**线程对** T0/T1,我读作 T0=行 g、T1=行 g+8;换错则整 tile 错,硬 FAIL)
      ——与 (1) 同为纯文档解读,嫌疑并列最高。imma_sp_s4 额外多一层:4:8
      **pair 聚簇**(存活单位是 2 宽子块而非单元素),sub-chunk 索引读错同样硬 FAIL
-  3. imma_s4 的 s4 片段 k 分布(k=8t..8t+7,第二寄存器 +32)
-  4. imma_s8/imma_s4/imma_sp_s8 的 B 手工收集路径(ld.shared.b8 打包顺序)
-  5. hgemm_wgmma_bf16 是**低风险**项:descriptor/fragment/流水线全部与已验证的
+  4. imma_s4 的 s4 片段 k 分布(k=8t..8t+7,第二寄存器 +32)
+  5. imma_s8/imma_s4/imma_sp_s8 的 B 手工收集路径(ld.shared.b8 打包顺序)
+  6. hgemm_wgmma_bf16 是**低风险**项:descriptor/fragment/流水线全部与已验证的
      f16 wgmma3 逐字节同构,新内容只有指令后缀;要跑的命令注意 `--arch sm_90a`
 - 峰值占比读数口径:bf16 对 148T(dense FP16);imma_s8 对 296 TOPS;
   imma_s4 对 592T(**assumed**,2×INT8,无官方数);hgemm_sp 对 296T(**assumed**);

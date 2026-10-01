@@ -227,6 +227,7 @@ SGEMM (C = A·B, square f32) harness with CUDA event timing:
 ./zoxide bench hgemm_wgmma2.ptx --n 4096 --iters 10 --arch sm_90a   # + 3-stage pipeline
 ./zoxide bench hgemm_wgmma3.ptx --n 4096 --iters 10 --arch sm_90a   # + A from registers (RS)
 ./zoxide bench hgemm_wgmma_bf16.ptx --n 4096 --iters 10 --arch sm_90a   # wgmma3 pipeline, bf16 operands
+./zoxide bench hgemm_wgmma_sp.ptx --n 4096 --iters 10 --arch sm_90a   # 2:4 sparse wgmma m64n16k32 + metadata
 ./zoxide bench hgemm_bf16.ptx --n 4096 --iters 10   # bf16 mma.sync m16n8k16 (hgemm_mma2 shape, u16 storage)
 ./zoxide bench imma_s8.ptx --n 4096 --iters 10      # int8 mma.sync m16n8k32, s32 accumulators
 ./zoxide bench imma_s4.ptx --n 4096 --iters 10      # int4 mma.sync m16n8k64, packed 2-per-byte
@@ -321,6 +322,14 @@ reg 15319 (34.8%) of the ~44 TFLOPS FP32 peak; reg verified at n=4000
   least-certain reading). Exact integer verification over the full s8 range
   against the pruned reference; peak printed against an assumed 2x-dense
   sparse-INT8 ceiling (592 TOPS). PTX-complete; GPU run parked.
+- `hgemm_wgmma_sp.zig`: 2:4-structured-sparse f16 on the warpgroup path
+  (`wgmma.mma_async.sp.m64n16k32.f32.f16.f16` — sparse f16 wgmma is k32, and
+  sparse A is descriptor-fed SS only, so this is built on the v1 pipeline,
+  not wgmma3's RS one). A is pruned + core-matrix packed with dense v1's byte
+  shape; metadata is one u32/row loaded into the per-lane register whose
+  warpgroup-wide mapping comes from PTX ISA Figure 175 (read off the PDF —
+  this is the family's highest-suspect reading, exact check will falsify it).
+  PTX-complete; GPU run parked.
 - `hgemm_wgmma_bf16.zig`: the wgmma3 pipeline with bf16 operands
   (`wgmma.mma_async.m64n16k16.f32.bf16.bf16`, RS form). bf16 and f16 are both
   16-bit, so descriptors, core-matrix packing, fragment order and the 3-stage

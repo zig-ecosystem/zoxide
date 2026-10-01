@@ -251,6 +251,18 @@ jobs:
           if grep -q 'st\.local' hgemm_wgmma_bf16.ptx; then
             echo "hgemm_wgmma_bf16: A fragments spilled to local memory"; exit 1
           fi
+          # hgemm_wgmma_sp: sparse wgmma, SS form, v1 pipeline. The full
+          # operand list (8 accumulators, a-desc, b-desc, metadata register,
+          # selector immediate 0, scale pred, 1, 1, trans 0/1) is the claim;
+          # assert the mnemonic and count, the SS descriptor form, and the
+          # drain-per-stage wait.
+          grep -q '\.target sm_90a' hgemm_wgmma_sp.ptx
+          test "$(grep -c 'wgmma\.mma_async\.sp\.sync\.aligned\.m64n16k32\.f32\.f16\.f16' hgemm_wgmma_sp.ptx)" -eq 16
+          if grep -q 'wgmma\.mma_async\.sync\.aligned' hgemm_wgmma_sp.ptx; then echo "hgemm_wgmma_sp: dense wgmma leaked in"; exit 1; fi
+          grep -qE 'wgmma\.mma_async\.sp[^{]*\{[^}]*\}, %rd[0-9]+, %rd[0-9]+, %r[0-9]+, 0,' hgemm_wgmma_sp.ptx
+          grep -q 'wgmma\.wait_group\.sync\.aligned 0' hgemm_wgmma_sp.ptx
+          if grep -qE '\$[0-9]|%\[' hgemm_wgmma_sp.ptx; then echo "hgemm_wgmma_sp: unsubstituted operand"; exit 1; fi
+          if grep -q 'st\.local' hgemm_wgmma_sp.ptx; then echo "hgemm_wgmma_sp: spilled"; exit 1; fi
           # f16_native: Zig's own f16 / @Vector(2, f16) must keep lowering to the
           # packed instructions. This is a property of Zig's NVPTX backend, not of
           # this repo, so a regression upstream would otherwise be invisible —
