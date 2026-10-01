@@ -79,6 +79,21 @@ pub const hgemm_sp = fn (a: [*]const f16, b: [*]const f16, meta: [*]const u16, c
 /// holds one full row per contributing lane rather than two half-rows.
 pub const imma_sp_s8 = fn (a: [*]const i8, b: [*]const i8, meta: [*]const u32, c: [*]i32, n: u32) void;
 
+/// `imma_sp_s4`: structured-sparse int4 mma
+/// (`mma.sp::ordered_metadata.m16n8k64.s32.s4.s4.s32`). The sparsity is 4:8
+/// and *pair-clustered*: within each 8-wide dense k chunk, exactly two of the
+/// four 2-wide sub-chunks survive whole. Kept pairs stay pairs, so under the
+/// `packS4` convention each surviving pair is one byte of the pruned row —
+/// the prune is byte-granular.
+///
+/// Buffers: `a` pruned A (n/4 packed bytes per row), `meta` one u32 per row
+/// per 64 dense k (n/64 words per row; chunk j owns nibble [4j+3 : 4j], low
+/// 2 bits = first surviving sub-chunk index 0..3, high 2 = second), `b` dense
+/// s4 packed (n/2 bytes per row), `c` s32, `n` the dense count per row.
+/// Selector contract is imma_sp_s8's: k64-s4 names a thread pair, t==0
+/// carries row g, t==1 row g+8.
+pub const imma_sp_s4 = fn (a: [*]const u8, b: [*]const u8, meta: [*]const u32, c: [*]i32, n: u32) void;
+
 /// Shape of the `const_vs_ldg` comparison, shared because the harness computes
 /// the expected result from it.
 ///

@@ -67,14 +67,15 @@ pub fn benchMain(
     const imma_s4 = std.mem.eql(u8, stem, "imma_s4");
     const hgemm_sp = std.mem.eql(u8, stem, "hgemm_sp");
     const imma_sp_s8 = std.mem.eql(u8, stem, "imma_sp_s8");
+    const imma_sp_s4 = std.mem.eql(u8, stem, "imma_sp_s4");
     const wgmma = hgemm3 or hgemm4 or hgemm5 or hgemm6 or hgemm_tma;
     const hgemm = hgemm1 or hgemm2 or wgmma;
     // Block tile (m, n). hgemm_wgmma uses one warpgroup over a 64x128 tile;
     // the mma.sync kernels use square tiles.
-    const hgemm_tile_m: usize = if (wgmma) 64 else if (hgemm2 or hgemm_bf16 or imma_s8 or imma_s4 or hgemm_sp or imma_sp_s8) 128 else 64;
+    const hgemm_tile_m: usize = if (wgmma) 64 else if (hgemm2 or hgemm_bf16 or imma_s8 or imma_s4 or hgemm_sp or imma_sp_s8 or imma_sp_s4) 128 else 64;
     const hgemm_tile_n: usize = if (wgmma) 128 else hgemm_tile_m;
-    if (!tiled and !naive and !reg and !opt and !opt2 and !swz and !hgemm and !hgemm_bf16 and !imma_s8 and !imma_s4 and !hgemm_sp and !imma_sp_s8) {
-        try out.print("error: bench supports sgemm_*, hgemm_mma*, hgemm_wgmma*, hgemm_tma, hgemm_bf16, imma_s* or *_sp_* inputs (got '{s}')\n", .{args.input});
+    if (!tiled and !naive and !reg and !opt and !opt2 and !swz and !hgemm and !hgemm_bf16 and !imma_s8 and !imma_s4 and !hgemm_sp and !imma_sp_s8 and !imma_sp_s4) {
+        try out.print("error: bench supports sgemm_*, hgemm_mma*, hgemm_wgmma*, hgemm_tma, hgemm_bf16, imma_s*, hgemm_sp or imma_sp_s* inputs (got '{s}')\n", .{args.input});
         return 1;
     }
     const regblocked = reg or opt or opt2 or swz;
@@ -111,6 +112,12 @@ pub fn benchMain(
     // groups, unguarded epilogue — n % 128 covers all of it.
     if (imma_sp_s8 and args.n % 128 != 0) {
         try out.print("error: imma_sp_s8 requires n % 128 == 0 (got {d})\n", .{args.n});
+        return 1;
+    }
+    // imma_sp_s4: 128x128 tiles, 64-deep dense K slice, 8-wide pair-clustered
+    // sparsity chunks, unguarded epilogue — n % 128 covers all of it.
+    if (imma_sp_s4 and args.n % 128 != 0) {
+        try out.print("error: imma_sp_s4 requires n % 128 == 0 (got {d})\n", .{args.n});
         return 1;
     }
     const n = args.n;
@@ -159,6 +166,8 @@ pub fn benchMain(
         try std.fmt.allocPrint(gpa, "{s}_$_hgemmSp", .{stem})
     else if (imma_sp_s8)
         try std.fmt.allocPrint(gpa, "{s}_$_immaSpS8", .{stem})
+    else if (imma_sp_s4)
+        try std.fmt.allocPrint(gpa, "{s}_$_immaSpS4", .{stem})
     else if (hgemm6)
         try std.fmt.allocPrint(gpa, "{s}_$_hgemmWgmma4", .{stem})
     else if (hgemm5)
@@ -272,6 +281,15 @@ pub fn benchMain(
         reportOccupancy(kern.inner, 128, dev_info, out) catch |e|
             try out.print("kernel: resource/occupancy query failed ({s}): {s}\n", .{ @errorName(e), drv.lastError() });
         return runImmaSpS8(gpa, &ctx, kern, n, args.iters, out, hgemm_tile_m, hgemm_tile_n, dev_info);
+    }
+    if (imma_sp_s4) {
+        const kern = mod.kernel(api.imma_sp_s4, namez) catch |e| {
+            try out.print("error: {s}: {s}\n", .{ @errorName(e), drv.lastError() });
+            return 1;
+        };
+        reportOccupancy(kern.inner, 128, dev_info, out) catch |e|
+            try out.print("kernel: resource/occupancy query failed ({s}): {s}\n", .{ @errorName(e), drv.lastError() });
+        return runImmaSpS4(gpa, &ctx, kern, n, args.iters, out, hgemm_tile_m, hgemm_tile_n, dev_info);
     }
     if (hgemm) {
         const kern = mod.kernel(api.hgemm, namez) catch |e| {
@@ -1077,6 +1095,166 @@ fn runImmaSpS8(gpa: std.mem.Allocator, ctx: *gpu.Context, kern: gpu.Kernel(api.i
     try out.print("global reads: {d:.2} GB demand -> {d:.2} TB/s (L2 absorbs repeats; DRAM is lower)\n", .{ demand_bytes / 1e9, gbs / 1000 });
     if (dev_info) |di| {
         const operands_bytes: f64 = @floatFromInt(n * n + n * n / 2); // B dense + A pruned
+        const l2: f64 = @floatFromInt(di.l2_bytes);
+        try out.print("A+B working set: {d:.0} MB vs {d:.0} MB L2 — {s}\n", .{
+            operands_bytes / (1 << 20),
+            l2 / (1 << 20),
+            if (operands_bytes <= l2) "fits, so repeat reads stay on chip" else "exceeds L2, repeat reads reach DRAM",
+        });
+    }
+
+    const c = try gpa.alloc(i32, elems);
+    defer gpa.free(c);
+    try ctx.download(c, dc);
+    var bad: usize = 0;
+    var first_bad: struct { row: usize, col: usize, want: i64, got: i32 } = undefined;
+    var vrng: u32 = 0xdeadbeef;
+    var si: usize = 0;
+    while (si < 256) : (si += 1) {
+        const idx = xorshift(&vrng) % elems;
+        const row: usize = idx / n;
+        const col: usize = idx % n;
+        var want: i64 = 0;
+        var k: usize = 0;
+        while (k < n) : (k += 1) {
+            want += @as(i64, a_ref[row * n + k]) * @as(i64, b[k * n + col]);
+        }
+        if (want != c[idx]) {
+            if (bad == 0) first_bad = .{ .row = row, .col = col, .want = want, .got = c[idx] };
+            bad += 1;
+        }
+    }
+    if (bad > 0) {
+        try out.print("FAIL: {d}/256 samples wrong; first at ({d},{d}) want {d} got {d}\n", .{
+            bad, first_bad.row, first_bad.col, first_bad.want, first_bad.got,
+        });
+        return 1;
+    }
+    try out.print("PASS: 256/256 samples exact (sparse integer MMA, no tolerance)\n", .{});
+    return 0;
+}
+
+/// Sparse IMMA s4 harness. The host builds a dense s4 A over the full [-8,7]
+/// range, prunes it 4:8 pair-clustered (two of four 2-wide sub-chunks survive
+/// per 8-wide chunk — NOT plain 2:4; the sub-chunk granularity is the whole
+/// difference from imma_sp_s8), and packs: one byte per surviving pair via
+/// api.packS4, one u32 metadata word per row per 64 k. Verification is exact
+/// integer equality against a dense CPU reference over the pruned matrix.
+/// Overflow bound: |product| <= 64, |sum| <= 64 * 4096 = 262144 — deep in i32.
+///
+/// No peak percentage is printed: the only INT4 ceiling available is already
+/// an assumption (2x INT8, no sourced H20 figure), and sparse = 2x that would
+/// be an assumption squared. Raw GOPS only.
+fn runImmaSpS4(gpa: std.mem.Allocator, ctx: *gpu.Context, kern: gpu.Kernel(api.imma_sp_s4), n: usize, iters: u32, out: *std.Io.Writer, tile_m: usize, tile_n: usize, dev_info: ?cu.Context.Info) !u8 {
+    const elems = n * n;
+    const a_ref = try gpa.alloc(i32, elems); // pruned dense A, for the CPU reference
+    defer gpa.free(a_ref);
+    const b = try gpa.alloc(i32, elems); // dense B mirrors (logical s4 values)
+    defer gpa.free(b);
+    const ap = try gpa.alloc(u8, elems / 4); // pruned packed A, n/4 bytes per row
+    defer gpa.free(ap);
+    const mh = try gpa.alloc(u32, elems / 64); // one word per row per 64 k
+    defer gpa.free(mh);
+    const bh = try gpa.alloc(u8, elems / 2); // dense packed B, n/2 per row
+    defer gpa.free(bh);
+
+    // The six ways to keep 2 of 4 sub-chunks, first index < second.
+    const combos = [6][2]u2{ .{ 0, 1 }, .{ 0, 2 }, .{ 0, 3 }, .{ 1, 2 }, .{ 1, 3 }, .{ 2, 3 } };
+    var rng: u32 = 0x5ca1ab1e;
+    const drawS4 = struct {
+        fn f(r: *u32) i8 {
+            return @as(i8, @bitCast(@as(u8, @truncate(xorshift(r) & 0xF)) << 4)) >> 4;
+        }
+    }.f;
+    for (0..n) |row| {
+        var kb: usize = 0; // 64-wide k blocks, one metadata word each
+        while (kb < n / 64) : (kb += 1) {
+            var word: u32 = 0;
+            inline for (0..8) |j| {
+                const chunk_base = row * n + kb * 64 + 8 * j;
+                const combo = combos[xorshift(&rng) % 6];
+                // Draw all four sub-chunks; only the surviving two keep their
+                // values in the reference and the packed output.
+                var pairs: [4][2]i8 = undefined;
+                inline for (0..4) |p| {
+                    pairs[p] = .{ drawS4(&rng), drawS4(&rng) };
+                    a_ref[chunk_base + 2 * p] = pairs[p][0];
+                    a_ref[chunk_base + 2 * p + 1] = pairs[p][1];
+                }
+                inline for (0..2) |e| {
+                    const p = combo[e];
+                    ap[(row * (n / 4)) + kb * 16 + 2 * j + e] = api.packS4(pairs[p][0], pairs[p][1]);
+                }
+                inline for (0..4) |p| {
+                    if (p != combo[0] and p != combo[1]) {
+                        a_ref[chunk_base + 2 * p] = 0;
+                        a_ref[chunk_base + 2 * p + 1] = 0;
+                    }
+                }
+                // Nibble j: low 2 bits = first surviving sub-chunk, high 2 = second.
+                word |= (@as(u32, combo[0]) | (@as(u32, combo[1]) << 2)) << (4 * j);
+            }
+            mh[row * (n / 64) + kb] = word;
+        }
+    }
+    // Dense B, packed two per byte.
+    for (0..elems / 2) |i| {
+        const lo = drawS4(&rng);
+        const hi = drawS4(&rng);
+        bh[i] = api.packS4(lo, hi);
+        b[2 * i] = lo;
+        b[2 * i + 1] = hi;
+    }
+
+    const da = try ctx.allocSlice(u8, elems / 4);
+    defer ctx.freeSlice(da);
+    const db = try ctx.allocSlice(u8, elems / 2);
+    defer ctx.freeSlice(db);
+    const dm = try ctx.allocSlice(u32, elems / 64);
+    defer ctx.freeSlice(dm);
+    const dc = try ctx.allocSlice(i32, elems);
+    defer ctx.freeSlice(dc);
+    try ctx.upload(da, ap);
+    try ctx.upload(db, bh);
+    try ctx.upload(dm, mh);
+    // Poisoned rather than zeroed, same reasoning as the other paths.
+    try ctx.fillBytes(dc, 0xff);
+
+    const kargs = .{ da, db, dm, dc, @as(u32, @intCast(n)) };
+    // grid.x walks N, grid.y walks M.
+    const grid_x: u32 = @intCast((n + tile_n - 1) / tile_n);
+    const grid_y: u32 = @intCast((n + tile_m - 1) / tile_m);
+
+    const start = try ctx.eventCreate();
+    defer start.destroy();
+    const stop = try ctx.eventCreate();
+    defer stop.destroy();
+    var best_ms: f32 = std.math.floatMax(f32);
+    var it: u32 = 0;
+    while (it < iters) : (it += 1) {
+        try start.record();
+        try kern.launch(.{ .x = grid_x, .y = grid_y }, .{ .x = 128 }, kargs);
+        try stop.record();
+        try stop.sync();
+        const ms = try start.elapsedMs(stop);
+        if (ms < best_ms) best_ms = ms;
+    }
+
+    // Two integer ops per MAC, same convention as imma_s8.
+    const ops = 2.0 * @as(f64, @floatFromInt(n)) * @as(f64, @floatFromInt(n)) * @as(f64, @floatFromInt(n));
+    const gops = ops / (@as(f64, best_ms) * 1e6);
+    try out.print("bench: imma_sp_s4(tile={d}x{d}) n={d} iters={d}\n", .{ tile_m, tile_n, n, iters });
+    try out.print("best: {d:.3} ms over {d} iters\n", .{ best_ms, iters });
+    try out.print("GOPS: {d:.1} (no peak %%: would be 2x the already-assumed INT4 ceiling — assumption squared, omitted)\n", .{gops});
+
+    const blocks = ((n + tile_m - 1) / tile_m) * ((n + tile_n - 1) / tile_n);
+    // A moves a quarter of its dense element count in bytes (2:4 kept, 2 per
+    // byte), B dense at half a byte per element, metadata negligible.
+    const demand_bytes: f64 = @floatFromInt(blocks * (tile_m / 4 + tile_n / 2) * n);
+    const gbs = demand_bytes / (@as(f64, best_ms) * 1e-3) / 1e9;
+    try out.print("global reads: {d:.2} GB demand -> {d:.2} TB/s (L2 absorbs repeats; DRAM is lower)\n", .{ demand_bytes / 1e9, gbs / 1000 });
+    if (dev_info) |di| {
+        const operands_bytes: f64 = @floatFromInt(n * n / 2 + n * n / 4); // B dense + A pruned
         const l2: f64 = @floatFromInt(di.l2_bytes);
         try out.print("A+B working set: {d:.0} MB vs {d:.0} MB L2 — {s}\n", .{
             operands_bytes / (1 << 20),

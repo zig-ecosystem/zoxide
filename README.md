@@ -231,6 +231,7 @@ SGEMM (C = A·B, square f32) harness with CUDA event timing:
 ./zoxide bench imma_s4.ptx --n 4096 --iters 10      # int4 mma.sync m16n8k64, packed 2-per-byte
 ./zoxide bench hgemm_sp.ptx --n 4096 --iters 10     # 2:4 sparse fp16 mma.sp m16n8k16 + metadata
 ./zoxide bench imma_sp_s8.ptx --n 4096 --iters 10   # 2:4 sparse int8 mma.sp m16n8k32 + metadata
+./zoxide bench imma_sp_s4.ptx --n 4096 --iters 10   # 4:8 pair-clustered sparse int4 mma.sp m16n8k64
 ```
 
 - `sgemm_naive.zig`: one thread per C element, direct global loads (baseline).
@@ -319,6 +320,13 @@ reg 15319 (34.8%) of the ~44 TFLOPS FP32 peak; reg verified at n=4000
   least-certain reading). Exact integer verification over the full s8 range
   against the pruned reference; peak printed against an assumed 2x-dense
   sparse-INT8 ceiling (592 TOPS). PTX-complete; GPU run parked.
+- `imma_sp_s4.zig`: sparse int4 (`mma.sp::ordered_metadata.m16n8k64.s32.s4.s4.s32`).
+  The sparsity rule is 4:8 *pair-clustered* — surviving units are 2-wide
+  sub-chunks, so with packS4 the prune is byte-granular and the pruned row
+  (16 B) takes the same ldmatrix.x2 path as imma_sp_s8; B is imma_s4's nibble
+  gather. Exact integer verification; no peak percentage (2x an already
+  assumed INT4 ceiling would be an assumption squared — raw GOPS only).
+  PTX-complete; GPU run parked.
 ![HGEMM progression on H20](docs/assets/hgemm-progression.svg)
 
 - `hgemm_wgmma.zig`: Hopper warpgroup MMA. 86.3 TFLOPS (58.3% of FP16 tensor

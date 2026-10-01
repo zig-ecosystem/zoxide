@@ -181,6 +181,18 @@ jobs:
           test "$(grep -c 'bar\.sync' imma_sp_s8.ptx)" -eq 2
           grep -q '\.target sm_9' imma_sp_s8.ptx
           if grep -q 'st\.local' imma_sp_s8.ptx; then echo "imma_sp_s8: spilled to local memory"; exit 1; fi
+          # imma_sp_s4: sparse int4 mma (4:8 pair-clustered). Same shape as
+          # imma_sp_s8; the B gather is imma_s4's nibble path (256 b8 loads).
+          test "$(grep -c 'mma\.sp::ordered_metadata\.sync\.aligned\.m16n8k64\.row\.col\.s32\.s4\.s4\.s32' imma_sp_s4.ptx)" -eq 64
+          test "$(grep -c 'ldmatrix\.sync\.aligned\.m8n8\.x2\.shared\.b16' imma_sp_s4.ptx)" -eq 8
+          test "$(grep -c 'ld\.shared\.b8' imma_sp_s4.ptx)" -eq 256
+          test "$(grep -c 'ld\.shared\.b32' imma_sp_s4.ptx)" -eq 8
+          grep -q 'cp\.async\.cg\.shared\.global' imma_sp_s4.ptx
+          grep -q 'cp\.async\.wait_group' imma_sp_s4.ptx
+          if grep -qE '\$[0-9]|%\[' imma_sp_s4.ptx; then echo "imma_sp_s4: unsubstituted operand"; exit 1; fi
+          test "$(grep -c 'bar\.sync' imma_sp_s4.ptx)" -eq 2
+          grep -q '\.target sm_9' imma_sp_s4.ptx
+          if grep -q 'st\.local' imma_sp_s4.ptx; then echo "imma_sp_s4: spilled to local memory"; exit 1; fi
           # tma_s2g_smoke: the s2g round trip — generated store wrapper plus
           # bulk-group completion on one side, the hand-written g2s load on
           # the other. Both directions must appear; if the s2g line vanishes
