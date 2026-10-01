@@ -12,11 +12,17 @@
 //!
 //! What it is not: no futures, no dependency DAG, no scheduler. Ordering
 //! within a stream is the hardware's; the layer adds nothing but values.
-//! Cross-stream dependencies via `cuStreamWaitEvent` are *not* offered: the
-//! binding does not exist in cuda_driver.zig yet, so two streams' operations
-//! overlap with no way to express "launch waits for the other stream's
-//! upload" beyond syncing both — add the binding first (GPU-verified) rather
-//! than faking it with extra syncs.
+//!
+//! Cross-stream dependencies ARE offered, via events: `recordEvent` /
+//! `waitEvent` ops wrap `cuEventRecord` + `cuStreamWaitEvent` (bound in
+//! cuda_driver.zig for this purpose). This is the minimum that makes a
+//! two-stream pipeline honest: an op on stream B can be made to wait for a
+//! point recorded on stream A. Still not offered: a dependency DAG executor
+//! (order the ops yourself — they issue in construction order, and a wait
+//! only constrains the device side). The event mechanics' real behavior —
+//! that the wait actually blocks the right work — is GPU-parked like
+//! everything timing-related; what the unit tests pin is the issue order
+//! and payload plumbing.
 //!
 //! The eager API is unchanged and remains the right tool for single-stream
 //! code; this layer pays for itself when the description and the execution
@@ -118,6 +124,34 @@ pub const Builder = struct {
             fn f(ctx: *host.Context, p: *const P, s: host.Stream) host.Error!void {
                 _ = ctx;
                 try p.kern.launchOn(s, p.grid, p.block, 0, p.args);
+            }
+        }.f);
+    }
+
+    /// Deferred `ev.recordOn(stream)`: record an event at this point in the
+    /// stream's work. Pair with `waitEvent` on another stream for a
+    /// cross-stream dependency. Create the event with `ctx.eventCreateSync()`
+    /// (timing disabled — these are sync points, not timers).
+    pub fn recordEvent(self: *Builder, stream: host.Stream, ev: host.Event) !*Operation {
+        const P = struct { ev: host.Event };
+        return self.add(stream, P, .{ .ev = ev }, struct {
+            fn f(ctx: *host.Context, p: *const P, s: host.Stream) host.Error!void {
+                _ = ctx;
+                try p.ev.recordOn(s);
+            }
+        }.f);
+    }
+
+    /// Deferred `stream.waitEvent(ev)`: everything issued to this stream
+    /// after this op waits for the event's recorded point. The event must
+    /// have been recorded by an earlier op (or eager call); recording it
+    /// later constructs a dependency on work that may not exist yet.
+    pub fn waitEvent(self: *Builder, stream: host.Stream, ev: host.Event) !*Operation {
+        const P = struct { ev: host.Event };
+        return self.add(stream, P, .{ .ev = ev }, struct {
+            fn f(ctx: *host.Context, p: *const P, s: host.Stream) host.Error!void {
+                _ = ctx;
+                try s.waitEvent(p.ev);
             }
         }.f);
     }
@@ -297,4 +331,39 @@ test "upload payload keeps the element-typed slice, not bytes" {
     const p: *const P = @ptrCast(@alignCast(op.payload.ptr));
     try testing.expectEqual(@as(usize, 4), p.dst.len);
     try testing.expectEqual(@as(f32, 3), p.src[2]);
+}
+
+test "recordEvent/waitEvent keep order and carry the event handle" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var b = Builder.init(arena.allocator());
+
+    const s1 = fakeStream(0x1000);
+    const s2 = fakeStream(0x2000);
+    const ev: host.Event = .{ .drv = undefined, .ev = @ptrFromInt(0x9000) };
+
+    // The README pipeline: upload on both streams, record on both, the
+    // launch stream waits on the other stream's event, then runs.
+    const noop = struct {
+        fn f(ctx: *host.Context, op: Operation) host.Error!void {
+            _ = ctx;
+            _ = op;
+        }
+    }.f;
+    _ = try b.upload(s1, host.Slice(f32){ .ptr = 0x10, .len = 4 }, &[4]f32{ 1, 2, 3, 4 });
+    _ = try b.upload(s2, host.Slice(f32){ .ptr = 0x20, .len = 4 }, &[4]f32{ 5, 6, 7, 8 });
+    _ = try b.recordEvent(s1, ev);
+    _ = try b.recordEvent(s2, ev);
+    _ = try b.waitEvent(s1, ev);
+    _ = try b.custom(s1, noop);
+
+    // Issue order is construction order, and the wait is between the second
+    // record and the compute op — that ordering is the whole contract.
+    try testing.expectEqual(@as(usize, 6), b.ops.items.len);
+    try testing.expectEqual(s1.s, b.ops.items[4].stream.s);
+
+    // The event handle survives the arena round trip.
+    const P = struct { ev: host.Event };
+    const p: *const P = @ptrCast(@alignCast(b.ops.items[3].payload.ptr));
+    try testing.expectEqual(ev.ev, p.ev.ev);
 }

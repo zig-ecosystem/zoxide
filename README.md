@@ -619,16 +619,25 @@ var arena = std.heap.ArenaAllocator.init(gpa);
 defer arena.deinit(); // after the sync: the arena owns the ops' payloads
 var ops = gpu.async_ops.Builder.init(arena.allocator());
 
+const ev_a = try ctx.eventCreateSync(); // CU_EVENT_DISABLE_TIMING: sync-only
+const ev_b = try ctx.eventCreateSync();
+defer ev_a.destroy();
+defer ev_b.destroy();
+
 _ = try ops.upload(s1, da, a_slice);     // s1: A in
 _ = try ops.upload(s2, db, b_slice);     // s2: B in, overlaps s1
+_ = try ops.recordEvent(s1, ev_a);
+_ = try ops.recordEvent(s2, ev_b);
+_ = try ops.waitEvent(s1, ev_b);         // s1 compute waits for B's upload
 _ = try ops.launch(Decl, kern, s1, grid, block, .{ da, db, dc, n });
 _ = try ops.download(s1, c_slice, dc);
 try ops.sync(&ctx); // issue all in order, then sync each stream used
 ```
 
-It is deliberately thin: same-stream ordering is the hardware's, and there
-is no cross-stream wait (`cuStreamWaitEvent` is not bound yet), so the
-launch above must share s1 with the upload it depends on. Single-stream
+It is deliberately thin: same-stream ordering is the hardware's, and
+cross-stream dependencies go through events (`recordEvent`/`waitEvent` ops
+over `cuEventRecord` + `cuStreamWaitEvent`); there is no DAG executor —
+you order the ops, a wait op constrains the device side. Single-stream
 code should keep using the eager calls — they are the same calls.
 
 `ctx.zero(buf)` and `ctx.fillBytes(buf, v)` are device-side `cuMemsetD8`; an

@@ -176,6 +176,9 @@ pub const Driver = struct {
     ) callconv(.c) c_int,
     cuCtxSynchronize: *const fn () callconv(.c) c_int,
     cuEventCreate: *const fn (phEvent: *CUevent, flags: c_uint) callconv(.c) c_int,
+    /// Never versioned upstream (there is no cuStreamWaitEvent_v2); the plain
+    /// symbol exists on every driver since CUDA 3.x.
+    cuStreamWaitEvent: *const fn (hStream: CUstream, hEvent: CUevent, flags: c_uint) callconv(.c) c_int,
     cuEventRecord: *const fn (hEvent: CUevent, hStream: CUstream) callconv(.c) c_int,
     cuEventSynchronize: *const fn (hEvent: CUevent) callconv(.c) c_int,
     cuEventElapsedTime: *const fn (pMilliseconds: *f32, hStart: CUevent, hEnd: CUevent) callconv(.c) c_int,
@@ -544,6 +547,15 @@ pub const Context = struct {
         try self.drv.check(self.drv.cuEventCreate(&ev, 0)); // CU_EVENT_DEFAULT
         return .{ .drv = self.drv, .ev = ev };
     }
+
+    /// CU_EVENT_DISABLE_TIMING: for events used purely as cross-stream sync
+    /// points — they never get a timestamp, and the driver keeps them cheaper.
+    pub fn eventCreateSync(self: *Context) Error!Event {
+        try self.drv.check(self.drv.cuCtxSetCurrent(self.ctx));
+        var ev: CUevent = null;
+        try self.drv.check(self.drv.cuEventCreate(&ev, 0x2)); // CU_EVENT_DISABLE_TIMING
+        return .{ .drv = self.drv, .ev = ev };
+    }
 };
 
 pub const Stream = struct {
@@ -566,6 +578,13 @@ pub const Stream = struct {
     pub fn destroy(self: Stream) void {
         _ = self.drv.cuStreamDestroy_v2(self.s);
     }
+
+    /// All work enqueued on this stream after the call waits for `ev`'s
+    /// recorded point on its own stream. The cross-stream dependency
+    /// primitive; flags are CU_STREAM_WAIT_* (none defined today).
+    pub fn waitEvent(self: Stream, ev: Event) Error!void {
+        try self.drv.check(self.drv.cuStreamWaitEvent(self.s, ev.ev, 0));
+    }
 };
 
 /// Page-locked host allocation, required for `cuMemcpy*Async` to overlap.
@@ -584,6 +603,13 @@ pub const Event = struct {
 
     pub fn record(self: Event) Error!void {
         try self.drv.check(self.drv.cuEventRecord(self.ev, null));
+    }
+
+    /// Record onto a specific stream. An event recorded on the default stream
+    /// orders against legacy-default-stream work only; cross-stream
+    /// dependencies need the explicit-stream form.
+    pub fn recordOn(self: Event, stream: Stream) Error!void {
+        try self.drv.check(self.drv.cuEventRecord(self.ev, stream.s));
     }
 
     pub fn sync(self: Event) Error!void {

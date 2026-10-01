@@ -219,6 +219,13 @@ pub const Context = struct {
         return self.inner.eventCreate();
     }
 
+    /// An event for cross-stream sync (CU_EVENT_DISABLE_TIMING), used with
+    /// `Event.recordOn(stream)` / `Stream.waitEvent(event)` — or the deferred
+    /// equivalents, `async_ops.Builder.recordEvent` / `waitEvent`.
+    pub fn eventCreateSync(self: *Context) Error!Event {
+        return self.inner.eventCreateSync();
+    }
+
     /// `non_blocking` streams do not serialise against the legacy default
     /// stream, which is what you want when streams should genuinely overlap.
     pub fn createStream(self: *Context, non_blocking: bool) Error!Stream {

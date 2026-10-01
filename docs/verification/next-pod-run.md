@@ -77,7 +77,13 @@ tma_s2g_smoke(2f/2g 节)** + sgemm_swz + hgemm_wgmma×3 + intrinsics_smoke ptxas
   ptxas 若拒绝该放置位置,第 4 条的 hgemm_bf16 会以 InvalidPtx 失败——
   修法是把发射位置挪到 entry 头部紧邻处,不是删功能。
 
-## 6. sanitize 包装的真实调用
+## 6. async 跨流事件 + sanitize 包装的真实调用
+
+- 跨流事件(async_ops 的 recordEvent/waitEvent,cuStreamWaitEvent 2026-10-01 落地)
+  只有宿主侧簿记测试,真实"等待是否挡对地方"未验。pod 上眼检方式:README streams
+  节的双流例子改写成一个小 main 跑一次(或等首个用该层的真实 kernel);
+  确认 waitEvent 的流确实停到事件点(可注入人为延迟验证顺序)。
+- sanitize 包装的真实调用
 
 - `zoxide sanitize --tool memcheck -- ./zoxide run vector_add`
 - 验证 exec 形态对真实 compute-sanitizer 可接受(本机只有 fake-binary 测试)。
