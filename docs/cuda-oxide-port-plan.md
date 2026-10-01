@@ -71,6 +71,7 @@
     - **峰值口径是假设**:仓库规格来源里没有 H20 INT4 数字(Hopper 官方不宣传 INT4),按惯例取 INT8 的 2 倍 = 592 TOPS,注释与输出里均标注为假设而非实测规格。
     - fp8(e4m3/e5m2)未做:catalog 标 minimum_sm 89,sm_90a 是否接受有争议(CUTLASS 在 Hopper 上 FP8 走 wgmma),留待单独评估。
   - fp8 形状:`mma.sync m16n8k16` 的 fp8 变体 catalog 已有 8 条(e4m3/e5m2 × f16/f32 累加),但 **sm_90 上的可用性有架构疑问**,留后处理,不与 int8 合并推进。int4/f6/f4 未动。
+  - 进展(2026-10-01):**bf16 扩展到 wgmma 线(PTX 级)**——`hgemm_wgmma_bf16`,wgmma3 流水线(3 级 cp.async、A 经 ldmatrix.x4 进寄存器、RS 形 m64n16k16 ×8)换 `.f32.bf16.bf16` 后缀。bf16/f16 同为 16 位,descriptor/core-matrix/fragment/累加器映射逐字节同构,新内容仅指令后缀;wgmma.zig 加兄弟 helper `mmaAsyncM64N16K16RsBf16`(f16 路径逐字节不动)。共享 `examples_abi.hgemm_bf16` 契约(含 .maxntid 128)。峰值口径 148T(与 FP16 同一份规格表,bf16 同率)。PTX:16 条 bf16 wgmma(与 wgmma3 同数)、2 条 ldmatrix.x4、wait_group 1、无 f16 泄漏、无残留、无 st.local;CI 结构断言与 wgmma3 对齐。
 - [ ] **sparse mma**:catalog 有条目,等 P2 mma 基建成熟后按同一模式生成。
   - 进展(2026-09-30):**f16 sparse 完成(PTX 级)**——`hgemm_sp`,`mma.sp::ordered_metadata.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32`。选型说明:src/gen 中**没有** plain `mma.sp.sync` 的 f16 封装(32 条 plain 条目全是 u4/s4/u8/s8 整数形),f16 sparse 只有 ordered_metadata 形;sm_80 起步,H20 可验证。
     - 关键事实(A fragment 与 metadata 读取,按 PTX ISA 解读,已写入 kernel 注释,真机首跑由精确比对证伪):A 以"已剪枝"形式存储(每 4 个 k 保 2,行宽减半 = 8 f16/16B),A fragment 每 lane 2 个 .b32(行 g 的 k-group t 两个保留值 + 行 g+8 同位),plain `ldmatrix.x2` 可直接加载(无需 dense 的 x4);B 保持 dense,沿用 `.x2.trans` 路径;metadata 每 mma 一个 32 位寄存器,由 selector 立即数选中的 lane 提供(取 0),低 16 位 = 行 g、高 16 位 = 行 g+8,行内 k-group j 占半字节 [4j+3:4j](低 2 位 = 第一个保留下标,高 2 位 = 第二个)。

@@ -66,16 +66,17 @@ pub fn benchMain(
     const imma_s8 = std.mem.eql(u8, stem, "imma_s8");
     const imma_s4 = std.mem.eql(u8, stem, "imma_s4");
     const hgemm_sp = std.mem.eql(u8, stem, "hgemm_sp");
+    const hgemm_wgmma_bf16 = std.mem.eql(u8, stem, "hgemm_wgmma_bf16");
     const imma_sp_s8 = std.mem.eql(u8, stem, "imma_sp_s8");
     const imma_sp_s4 = std.mem.eql(u8, stem, "imma_sp_s4");
-    const wgmma = hgemm3 or hgemm4 or hgemm5 or hgemm6 or hgemm_tma;
+    const wgmma = hgemm3 or hgemm4 or hgemm5 or hgemm6 or hgemm_tma or hgemm_wgmma_bf16;
     const hgemm = hgemm1 or hgemm2 or wgmma;
     // Block tile (m, n). hgemm_wgmma uses one warpgroup over a 64x128 tile;
     // the mma.sync kernels use square tiles.
     const hgemm_tile_m: usize = if (wgmma) 64 else if (hgemm2 or hgemm_bf16 or imma_s8 or imma_s4 or hgemm_sp or imma_sp_s8 or imma_sp_s4) 128 else 64;
     const hgemm_tile_n: usize = if (wgmma) 128 else hgemm_tile_m;
-    if (!tiled and !naive and !reg and !opt and !opt2 and !swz and !hgemm and !hgemm_bf16 and !imma_s8 and !imma_s4 and !hgemm_sp and !imma_sp_s8 and !imma_sp_s4) {
-        try out.print("error: bench supports sgemm_*, hgemm_mma*, hgemm_wgmma*, hgemm_tma, hgemm_bf16, imma_s*, hgemm_sp or imma_sp_s* inputs (got '{s}')\n", .{args.input});
+    if (!tiled and !naive and !reg and !opt and !opt2 and !swz and !hgemm and !hgemm_bf16 and !imma_s8 and !imma_s4 and !hgemm_sp and !imma_sp_s8 and !imma_sp_s4 and !hgemm_wgmma_bf16) {
+        try out.print("error: bench supports sgemm_*, hgemm_mma*, hgemm_wgmma*, hgemm_tma, hgemm_bf16, imma_s*, *_sp_* or hgemm_wgmma_bf16 inputs (got '{s}')\n", .{args.input});
         return 1;
     }
     const regblocked = reg or opt or opt2 or swz;
@@ -164,6 +165,8 @@ pub fn benchMain(
         try std.fmt.allocPrint(gpa, "{s}_$_immaS4", .{stem})
     else if (hgemm_sp)
         try std.fmt.allocPrint(gpa, "{s}_$_hgemmSp", .{stem})
+    else if (hgemm_wgmma_bf16)
+        try std.fmt.allocPrint(gpa, "{s}_$_hgemmWgmmaBf16", .{stem})
     else if (imma_sp_s8)
         try std.fmt.allocPrint(gpa, "{s}_$_immaSpS8", .{stem})
     else if (imma_sp_s4)
@@ -237,14 +240,14 @@ pub fn benchMain(
             try out.print("kernel: resource/occupancy query failed ({s}): {s}\n", .{ @errorName(e), drv.lastError() });
         return runHgemmTma(gpa, &ctx, kern, n, args.iters, out, dev_info);
     }
-    if (hgemm_bf16) {
+    if (hgemm_bf16 or hgemm_wgmma_bf16) {
         const kern = mod.kernel(api.hgemm_bf16, namez) catch |e| {
             try out.print("error: {s}: {s}\n", .{ @errorName(e), drv.lastError() });
             return 1;
         };
         reportOccupancy(kern.inner, 128, dev_info, out) catch |e|
             try out.print("kernel: resource/occupancy query failed ({s}): {s}\n", .{ @errorName(e), drv.lastError() });
-        return runHgemmBf16(gpa, &ctx, kern, n, args.iters, out, hgemm_tile_m, hgemm_tile_n, dev_info);
+        return runHgemmBf16(gpa, &ctx, kern, n, args.iters, out, stem, hgemm_tile_m, hgemm_tile_n, dev_info);
     }
     if (imma_s8) {
         const kern = mod.kernel(api.imma_s8, namez) catch |e| {
@@ -531,7 +534,7 @@ fn f32ToBf16Bits(x: f32) u16 {
 /// n=4096 integer products stays far inside f32's exact-integer range, and
 /// the comparison is effectively exact — the same trick hgemm_mma2 uses,
 /// applied to a storage type Zig cannot name.
-fn runHgemmBf16(gpa: std.mem.Allocator, ctx: *gpu.Context, kern: gpu.Kernel(api.hgemm_bf16), n: usize, iters: u32, out: *std.Io.Writer, tile_m: usize, tile_n: usize, dev_info: ?cu.Context.Info) !u8 {
+fn runHgemmBf16(gpa: std.mem.Allocator, ctx: *gpu.Context, kern: gpu.Kernel(api.hgemm_bf16), n: usize, iters: u32, out: *std.Io.Writer, stem: []const u8, tile_m: usize, tile_n: usize, dev_info: ?cu.Context.Info) !u8 {
     const elems = n * n;
     const ah = try gpa.alloc(u16, elems);
     defer gpa.free(ah);
@@ -591,7 +594,7 @@ fn runHgemmBf16(gpa: std.mem.Allocator, ctx: *gpu.Context, kern: gpu.Kernel(api.
 
     const flops = 2.0 * @as(f64, @floatFromInt(n)) * @as(f64, @floatFromInt(n)) * @as(f64, @floatFromInt(n));
     const gflops = flops / (@as(f64, best_ms) * 1e6);
-    try out.print("bench: hgemm_bf16(tile={d}x{d}) n={d} iters={d}\n", .{ tile_m, tile_n, n, iters });
+    try out.print("bench: {s}(tile={d}x{d}) n={d} iters={d}\n", .{ stem, tile_m, tile_n, n, iters });
     try out.print("best: {d:.3} ms over {d} iters\n", .{ best_ms, iters });
     try out.print("GFLOPS: {d:.1} ({d:.1}% of H20 BF16 tensor peak ~{d:.0} GFLOPS)\n", .{ gflops, gflops / h20_bf16_peak_gflops * 100, h20_bf16_peak_gflops });
 

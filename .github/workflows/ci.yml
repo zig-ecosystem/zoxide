@@ -237,6 +237,20 @@ jobs:
           # The RS operand form takes two brace groups (accumulators, then A);
           # the SS form takes one followed by two descriptors.
           grep -qE 'wgmma\.mma_async[^{]*\{[^}]*\}, \{[^}]*\}' hgemm_wgmma3.ptx
+          # hgemm_wgmma_bf16: the wgmma3 pipeline with bf16 operands. Same
+          # structure assertions as wgmma3 — bf16 changes only the mnemonic
+          # suffix, so any structural drift between the two is a red flag.
+          grep -q '\.target sm_90a' hgemm_wgmma_bf16.ptx
+          test "$(grep -c 'wgmma\.mma_async\.sync\.aligned\.m64n16k16\.f32\.bf16\.bf16' hgemm_wgmma_bf16.ptx)" -eq 16
+          if grep -q 'f32\.f16\.f16' hgemm_wgmma_bf16.ptx; then echo "hgemm_wgmma_bf16: f16 wgmma leaked in"; exit 1; fi
+          test "$(grep -c 'ldmatrix\.sync\.aligned\.m8n8\.x4' hgemm_wgmma_bf16.ptx)" -eq 2
+          grep -q 'wgmma\.wait_group\.sync\.aligned 1' hgemm_wgmma_bf16.ptx
+          grep -qE 'wgmma\.mma_async[^{]*\{[^}]*\}, \{[^}]*\}' hgemm_wgmma_bf16.ptx
+          grep -q '\.maxntid 128;' hgemm_wgmma_bf16.ptx
+          if grep -qE '\$[0-9]|%\[' hgemm_wgmma_bf16.ptx; then echo "hgemm_wgmma_bf16: unsubstituted operand"; exit 1; fi
+          if grep -q 'st\.local' hgemm_wgmma_bf16.ptx; then
+            echo "hgemm_wgmma_bf16: A fragments spilled to local memory"; exit 1
+          fi
           # f16_native: Zig's own f16 / @Vector(2, f16) must keep lowering to the
           # packed instructions. This is a property of Zig's NVPTX backend, not of
           # this repo, so a regression upstream would otherwise be invisible —

@@ -28,7 +28,8 @@ pub const hgemm = fn (a: [*]const f16, b: [*]const f16, c: [*]f32, n: u32) void;
 /// Also the launch-bounds demonstration: the kernel is written for exactly
 /// 128 threads (4 warps, no bounds guards), so the contract says so —
 /// `cuda.launchBounds` emits `.maxntid 128` into the PTX and the host launch
-/// validates against it.
+/// validates against it. Shared with `hgemm_wgmma_bf16` (same u16-storage
+/// bf16 convention, same 128-thread shape).
 pub const hgemm_bf16 = struct {
     pub const signature = fn (a: [*]const u16, b: [*]const u16, c: [*]f32, n: u32) void;
     pub const launch_bounds = .{ .max_threads = 128 };

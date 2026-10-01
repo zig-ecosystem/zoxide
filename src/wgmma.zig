@@ -280,6 +280,51 @@ pub inline fn mmaAsyncM64N16K16Rs(
     acc.* = .{ .d0 = d0, .d1 = d1, .d2 = d2, .d3 = d3, .d4 = d4, .d5 = d5, .d6 = d6, .d7 = d7 };
 }
 
+/// `wgmma.mma_async.sync.aligned.m64n16k16.f32.bf16.bf16` — the bf16 sibling
+/// of `mmaAsyncM64N16K16Rs`. bf16 and f16 are both 16-bit, so every layout
+/// mechanic above (core-matrix packing, descriptor byte offsets, ALayout
+/// register order) is bit-identical; the only difference is the type suffix
+/// in the mnemonic. The f16 helper is left untouched so its evidence (CI
+/// assertions, measured numbers) stays valid byte-for-byte.
+pub inline fn mmaAsyncM64N16K16RsBf16(
+    acc: *Acc64x16,
+    a: [4]u32,
+    desc_b: u64,
+    scale_d: bool,
+    comptime major_b: Major,
+) void {
+    var d0 = acc.d0;
+    var d1 = acc.d1;
+    var d2 = acc.d2;
+    var d3 = acc.d3;
+    var d4 = acc.d4;
+    var d5 = acc.d5;
+    var d6 = acc.d6;
+    var d7 = acc.d7;
+    asm volatile (
+        \\{
+        \\.reg .pred p;
+        \\setp.ne.b32 p, %[sd], 0;
+        \\wgmma.mma_async.sync.aligned.m64n16k16.f32.bf16.bf16 {%[d0],%[d1],%[d2],%[d3],%[d4],%[d5],%[d6],%[d7]}, {%[a0],%[a1],%[a2],%[a3]}, %[db], p, 1, 1,
+    ++ " " ++ decimal(@intFromEnum(major_b)) ++ ";\n}"
+        : [d0] "+f" (d0),
+          [d1] "+f" (d1),
+          [d2] "+f" (d2),
+          [d3] "+f" (d3),
+          [d4] "+f" (d4),
+          [d5] "+f" (d5),
+          [d6] "+f" (d6),
+          [d7] "+f" (d7),
+        : [a0] "r" (a[0]),
+          [a1] "r" (a[1]),
+          [a2] "r" (a[2]),
+          [a3] "r" (a[3]),
+          [db] "l" (desc_b),
+          [sd] "r" (@as(u32, @intFromBool(scale_d))),
+        : .{ .memory = true });
+    acc.* = .{ .d0 = d0, .d1 = d1, .d2 = d2, .d3 = d3, .d4 = d4, .d5 = d5, .d6 = d6, .d7 = d7 };
+}
+
 /// Comptime decimal rendering, for splicing immediates into asm templates.
 fn decimal(comptime n: u32) []const u8 {
     comptime {

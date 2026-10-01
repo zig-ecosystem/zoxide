@@ -226,6 +226,7 @@ SGEMM (C = A·B, square f32) harness with CUDA event timing:
 ./zoxide bench hgemm_wgmma.ptx  --n 4096 --iters 10 --arch sm_90a   # warpgroup MMA (wgmma.mma_async)
 ./zoxide bench hgemm_wgmma2.ptx --n 4096 --iters 10 --arch sm_90a   # + 3-stage pipeline
 ./zoxide bench hgemm_wgmma3.ptx --n 4096 --iters 10 --arch sm_90a   # + A from registers (RS)
+./zoxide bench hgemm_wgmma_bf16.ptx --n 4096 --iters 10 --arch sm_90a   # wgmma3 pipeline, bf16 operands
 ./zoxide bench hgemm_bf16.ptx --n 4096 --iters 10   # bf16 mma.sync m16n8k16 (hgemm_mma2 shape, u16 storage)
 ./zoxide bench imma_s8.ptx --n 4096 --iters 10      # int8 mma.sync m16n8k32, s32 accumulators
 ./zoxide bench imma_s4.ptx --n 4096 --iters 10      # int4 mma.sync m16n8k64, packed 2-per-byte
@@ -320,6 +321,13 @@ reg 15319 (34.8%) of the ~44 TFLOPS FP32 peak; reg verified at n=4000
   least-certain reading). Exact integer verification over the full s8 range
   against the pruned reference; peak printed against an assumed 2x-dense
   sparse-INT8 ceiling (592 TOPS). PTX-complete; GPU run parked.
+- `hgemm_wgmma_bf16.zig`: the wgmma3 pipeline with bf16 operands
+  (`wgmma.mma_async.m64n16k16.f32.bf16.bf16`, RS form). bf16 and f16 are both
+  16-bit, so descriptors, core-matrix packing, fragment order and the 3-stage
+  pipeline are byte-identical to the proven f16 kernel; the only new content
+  is the instruction suffix. Lowest-risk entry in the shape family; shares
+  `examples_abi.hgemm_bf16` (u16 storage, `.maxntid 128` contract).
+  PTX-complete; GPU run parked.
 - `imma_sp_s4.zig`: sparse int4 (`mma.sp::ordered_metadata.m16n8k64.s32.s4.s4.s32`).
   The sparsity rule is 4:8 *pair-clustered* — surviving units are 2-wide
   sub-chunks, so with packS4 the prune is byte-granular and the pruned row

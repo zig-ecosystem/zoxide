@@ -44,7 +44,7 @@ tma_s2g_smoke(2f/2g 节)** + sgemm_swz + hgemm_wgmma×3 + intrinsics_smoke ptxas
   的 ptxas regs 数 vs wgmma3 的 102——下降则支持「TMA 为更宽 wgmma 腾寄存器」
   的使能条件论;结果精确性必须过。
 
-## 4. 新 mma 形状家族(hgemm_bf16 / imma_s8 / imma_s4 / hgemm_sp / imma_sp_s8 / imma_sp_s4)
+## 4. 新 mma 形状家族(hgemm_bf16 / imma_s8 / imma_s4 / hgemm_sp / imma_sp_s8 / imma_sp_s4 / hgemm_wgmma_bf16)
 
 - `zoxide bench <stem> --n 4096 --iters 5`(都是 sm_90 默认可跑,无需 --arch)。
 - 全部精确校验(bf16/f16 小整数技巧,int 系零容差),任何布局/元数据解读
@@ -58,10 +58,13 @@ tma_s2g_smoke(2f/2g 节)** + sgemm_swz + hgemm_wgmma×3 + intrinsics_smoke ptxas
      **pair 聚簇**(存活单位是 2 宽子块而非单元素),sub-chunk 索引读错同样硬 FAIL
   3. imma_s4 的 s4 片段 k 分布(k=8t..8t+7,第二寄存器 +32)
   4. imma_s8/imma_s4/imma_sp_s8 的 B 手工收集路径(ld.shared.b8 打包顺序)
+  5. hgemm_wgmma_bf16 是**低风险**项:descriptor/fragment/流水线全部与已验证的
+     f16 wgmma3 逐字节同构,新内容只有指令后缀;要跑的命令注意 `--arch sm_90a`
 - 峰值占比读数口径:bf16 对 148T(dense FP16);imma_s8 对 296 TOPS;
   imma_s4 对 592T(**assumed**,2×INT8,无官方数);hgemm_sp 对 296T(**assumed**);
   imma_sp_s8 对 592 TOPS(**assumed**,sparse = 2× dense INT8);
-  imma_sp_s4 不报峰值比(2× 于一个本身假设的 INT4 上限,假设的平方,只报 GOPS)。
+  imma_sp_s4 不报峰值比(2× 于一个本身假设的 INT4 上限,假设的平方,只报 GOPS);
+  hgemm_wgmma_bf16 对 148T(与 FP16 同一份规格表,bf16 同率)。
 
 ## 5. launch bounds 的 ptxas 接受性(hgemm_bf16 顺带覆盖)
 
